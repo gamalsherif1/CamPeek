@@ -27,7 +27,7 @@ CamPeek gives you a **quick, floating webcam window** right from your GNOME pane
 git clone https://github.com/gamalsherif1/CamPeek.git
 cd CamPeek
 ./install.sh
-
+```
 This will:
 🔁 Link the extension to your GNOME Shell
 ✅ Enable it
