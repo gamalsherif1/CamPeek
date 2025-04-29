@@ -1,0 +1,90 @@
+/* Style for the frame with transition effect - no border */
+.campeek-frame {
+    transition: opacity 100ms ease-in-out;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+}
+
+/* Give the video container a minimal border */
+.campeek-video-container {
+    background: transparent !important; /* Completely transparent background */
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 1px solid rgba(255, 255, 255, 0.1) !important; /* Very subtle border */
+    box-shadow: none !important; /* No shadow */
+    border-radius: 0 !important; /* No rounded corners */
+    overflow: hidden !important;
+}
+
+/* Direct box for our menu layout */
+.campeek-direct-box {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+
+/* Style for popup menu content - completely transparent */
+.popup-menu-content {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important; /* No border */
+    background-color: transparent !important; /* Fully transparent */
+    box-shadow: none !important; /* No shadow */
+    border-radius: 0 !important; /* No rounded corners */
+}
+
+/* Direct style overrides for all menu elements */
+.popup-menu-item {
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: none !important;
+}
+
+/* Hide BoxPointer arrow completely */
+.popup-menu .popup-menu-arrow {
+    width: 0 !important;
+    height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+}
+
+/* Fix the panel button styling to ensure icon appears */
+.panel-button {
+    -natural-hpadding: 6px;
+    -minimum-hpadding: 6px;
+    font-weight: bold;
+    color: #eeeeec;
+    transition-duration: 100ms;
+}
+
+/* Explicitly style the indicator icon in the top panel */
+.system-status-icon {
+    icon-size: 16px;
+    padding: 0 4px;
+    margin: 0;
+}
+
+/* Make sure the status icon box is visible */
+.panel-status-menu-box {
+    spacing: 4px;
+}
+
+/* Add a style for the spinner */
+.spinner {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        -st-icon-rotation: 360deg;
+    }
+}

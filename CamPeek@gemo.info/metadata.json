@@ -1,0 +1,7 @@
+{
+  "name": "CamPeek",
+  "description": "CamPeek is a lightweight GNOME Shell extension inspired by the popular macOS app Hand Mirror, allowing you to instantly check your webcam directly from your Linux desktop's top bar.\n\n🎥 Key Features:\n• ✨ Instant Access: Open your webcam feed in one quick click—perfect for a last-minute check before video calls.\n• 🖼️ Minimalist Design: A sleek, always-on-top, frameless window for a distraction-free preview.\n• 🔒 Privacy First: CamPeek streams your webcam feed directly without recording or saving any data.\n• 🚀 Lightweight & Simple: Fast, unobtrusive, and integrates smoothly into your GNOME desktop experience.\n\n📌 Ideal For:\n• Quickly checking your appearance or environment before meetings.\n• Confirming camera functionality instantly—no need to open heavy applications.\n• Privacy-conscious users looking for a fast and straightforward webcam preview tool.",
+  "uuid": "CamPeek@gemo.info",
+  "shell-version": ["48"],
+  "settings-schema": "org.gnome.shell.extensions.campeek"
+}
