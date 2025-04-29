@@ -1,7 +1,7 @@
 # CamPeek
 🪞 CamPeek — Instant webcam preview for GNOME Shell (Linux alternative to macOS's Hand Mirror)
 
----
+----
 
 ## 📸 What is CamPeek?
 
@@ -27,9 +27,9 @@ cd CamPeek
 ./install.sh
 ```
 This will:
-🔁 Link the extension to your GNOME Shell
-✅ Enable it
-🔃 Ask if you'd like to restart GNOME Shell (for instant changes)
+- 🔁 Link the extension to your GNOME Shell
+- ✅ Enable it
+- 🔃 Ask if you'd like to log out of GNOME Shell (for instant changes)
 
 ---
 
