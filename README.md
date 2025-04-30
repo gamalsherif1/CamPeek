@@ -41,14 +41,14 @@ This will:
 
 ---
 
-🧪 How to Use
+🧪 How to Use:
 Click the 🪞 CamPeek icon in the top bar to open/close the preview
 The preview window will stay above all other apps
 Perfect for a last check before going live
 
 ---
 
-❓ FAQ
+❓ FAQ:
 Does it record or save video?
 🔐 No. CamPeek is just a live mirror — nothing is saved.
 
@@ -57,7 +57,7 @@ Not yet — planned for future versions! 🎯
 
 
 ---
-👨‍💻 Contributing
+👨‍💻 Contributing:
 Pull requests are welcome! If you have an idea or found a bug, feel free to open an issue or submit a PR.
 
 ---
