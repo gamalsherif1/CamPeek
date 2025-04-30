@@ -19,8 +19,11 @@ CamPeek gives you a **quick, floating webcam window** right from your GNOME pane
 - 🖼️ Clean, borderless always-on-top preview  
 - 🖱️ Click once to show or hide your webcam feed  
 - 🔐 Privacy-friendly (live only – no recording or saving)  
-- 🐧 Built for GNOME Shell on Linux  
+- 🐧 Built for GNOME Shell on Linux
 
+## 📸 Preview
+
+![CamPeek Screenshot](screenshots/thumbnail.png)
 ---
 
 ## ⚙️ Installation
