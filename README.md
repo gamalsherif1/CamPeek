@@ -1,7 +1,7 @@
 # CamPeek
 
 <p align="center">
-  <img src="CamPeek@gemo.info/icons/mirror.png" width="200" alt="CamPeek Logo"/>
+  <img src="CamPeek%40gamalsherif1.github.io/icons/mirror.png" width="200" alt="CamPeek Logo"/>
 </p>
 
 🪞 CamPeek — Instant webcam preview for GNOME Shell (Linux alternative to macOS's Hand Mirror)  
