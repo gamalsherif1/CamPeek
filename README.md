@@ -85,4 +85,12 @@ Found a bug or have an idea? Open an issue or submit a PR.
 
 ---
 
+## ☕ Support
+
+If you like this project, consider buying me a coffee:
+
+<a href="https://buymeacoffee.com/gamalsherii" target="_blank">
+  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50" width="210" />
+</a>
+
 Made with ❤️ by **Gamal Sherif**
