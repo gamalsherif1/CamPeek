@@ -13,9 +13,7 @@
 
 You can install CamPeek directly from the GNOME Extensions website:
 
-👉 **[Click here to install CamPeek](https://extensions.gnome.org/extension/8090/campeek/)**
-
-Make sure you have the [GNOME Shell integration browser extension](https://wiki.gnome.org/Projects/GnomeShellIntegration) and native host connector installed.
+👉 **[Click here to install CamPeek](https://extensions.gnome.org/extension/8092/campeek/)**
 
 ---
 
