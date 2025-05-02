@@ -21,8 +21,7 @@ import St from "gi://St";
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import Clutter from "gi://Clutter";
-import Gtk from "gi://Gtk?version=4.0";
-import GdkPixbuf from "gi://GdkPixbuf";
+// Removed unused GdkPixbuf import (Issue #3)
 
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
@@ -43,7 +42,7 @@ const CamPeekIndicator = GObject.registerClass(
 
       // Use the icon from the specified path
       let iconPath = this._extension.path + "/icons/mirror.png";
-      log("CamPeek: Looking for icon at " + iconPath);
+      console.log("CamPeek: Looking for icon at " + iconPath);
 
       // Try to load the custom icon with error checking
       let iconFile = Gio.File.new_for_path(iconPath);
@@ -52,12 +51,14 @@ const CamPeekIndicator = GObject.registerClass(
       try {
         if (iconFile.query_exists(null)) {
           gicon = new Gio.FileIcon({ file: iconFile });
-          log("CamPeek: Custom icon loaded successfully from " + iconPath);
+          console.log(
+            "CamPeek: Custom icon loaded successfully from " + iconPath,
+          );
         } else {
-          log("CamPeek: Icon file does not exist at: " + iconPath);
+          console.log("CamPeek: Icon file does not exist at: " + iconPath);
         }
       } catch (e) {
-        logError(e, "CamPeek: Error loading custom icon");
+        console.error(e, "CamPeek: Error loading custom icon");
       }
 
       // Add the icon to the panel with fallback
@@ -77,6 +78,13 @@ const CamPeekIndicator = GObject.registerClass(
       // Clear all default menu items if any exist
       this.menu.removeAll();
 
+      // Create a menu item to contain the camera preview
+      let previewItem = new PopupMenu.PopupBaseMenuItem({
+        reactive: false,
+        style_class: "campeek-preview-item",
+      });
+      this.menu.addMenuItem(previewItem);
+
       // Create a container for the camera preview with 3:2 aspect ratio
       this._previewContainer = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
@@ -84,20 +92,10 @@ const CamPeekIndicator = GObject.registerClass(
         y_expand: true,
         width: 480, // 3:2 aspect ratio (480:320)
         height: 320, // 3:2 aspect ratio
-        style_class: "campeek-video-container",
       });
 
-      // Add a box layout to contain the preview
-      this._directBox = new St.BoxLayout({
-        vertical: true,
-        style_class: "campeek-direct-box",
-        x_expand: true,
-        y_expand: true,
-      });
-      this._directBox.add_child(this._previewContainer);
-
-      // Add the box to the menu
-      this.menu.box.add_child(this._directBox);
+      // Add the preview container to the menu item
+      previewItem.add_child(this._previewContainer);
 
       // Add a spinner for loading state
       this._spinner = new St.Icon({
@@ -118,16 +116,30 @@ const CamPeekIndicator = GObject.registerClass(
         this.menu._boxPointer._arrowSide = St.Side.TOP;
       }
 
+      // Track menu timeout (for Issue #1)
+      this._menuStyleTimeout = null;
+
       // Connect to menu opening and closing signals
       this.menu.connect("open-state-changed", (menu, isOpen) => {
         if (isOpen) {
           this._startCameraPreview();
 
-          // Apply styling to menu after it's opened
-          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => {
-            this._removeAllPadding();
-            return GLib.SOURCE_REMOVE;
-          });
+          // Clear existing timeout before setting a new one
+          if (this._menuStyleTimeout) {
+            GLib.source_remove(this._menuStyleTimeout);
+            this._menuStyleTimeout = null;
+          }
+
+          // Apply styling to menu after it's opened - now tracked for cleanup
+          this._menuStyleTimeout = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            10,
+            () => {
+              this._removeAllPadding();
+              this._menuStyleTimeout = null;
+              return GLib.SOURCE_REMOVE;
+            },
+          );
         } else {
           this._stopCameraPreview();
         }
@@ -192,8 +204,28 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
 `;
 
         // Write the script to a file
-        GLib.file_set_contents(scriptPath, scriptContent);
-        GLib.chmod(scriptPath, 0o755);
+        let bytes = new TextEncoder().encode(scriptContent);
+        let file = Gio.File.new_for_path(scriptPath);
+
+        let outputStream = file.replace(
+          null,
+          false,
+          Gio.FileCreateFlags.NONE,
+          null,
+        );
+
+        outputStream.write_bytes(new GLib.Bytes(bytes), null);
+        outputStream.close(null);
+
+        // Set executable permission
+        let info = file.query_info(
+          "unix::mode",
+          Gio.FileQueryInfoFlags.NONE,
+          null,
+        );
+        let mode = info.get_attribute_uint32("unix::mode");
+        info.set_attribute_uint32("unix::mode", mode | 0o100); // Add executable bit
+        file.set_attributes_from_info(info, Gio.FileQueryInfoFlags.NONE, null);
 
         // Launch the script to start capturing frames
         this._cameraProcess = Gio.Subprocess.new(
@@ -204,6 +236,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         // Reset frame counter
         this._lastProcessedFrame = -1;
 
+        // Clear existing refresh timeout if it exists
+        if (this._refreshTimeout) {
+          GLib.source_remove(this._refreshTimeout);
+          this._refreshTimeout = 0;
+        }
+
         // Start a refresh timer with higher priority for better performance
         this._refreshTimeout = GLib.timeout_add(
           GLib.PRIORITY_HIGH,
@@ -213,6 +251,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
             return GLib.SOURCE_CONTINUE;
           },
         );
+
+        // Clear existing start timeout if it exists
+        if (this._startTimeout) {
+          GLib.source_remove(this._startTimeout);
+          this._startTimeout = 0;
+        }
 
         // Set a timeout to check if camera started successfully
         this._startTimeout = GLib.timeout_add(
@@ -227,7 +271,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           },
         );
       } catch (e) {
-        logError(e, "Error starting camera");
+        console.error(e, "Error starting camera");
         this._spinner.visible = false;
       }
     }
@@ -262,9 +306,6 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
                 style_class: "campeek-frame",
               });
               this._previewContainer.add_child(this._cameraOutput);
-              // Apply no border style immediately
-              this._cameraOutput.style =
-                "border: none; margin: 0; padding: 0; background: none;";
             } else {
               // Just update the gicon of the existing St.Icon
               this._cameraOutput.set_gicon(gicon);
@@ -274,7 +315,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           }
         }
       } catch (e) {
-        logError(e, "Error refreshing frame");
+        console.error(e, "Error refreshing frame");
       }
 
       return true;
@@ -317,7 +358,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           ? { index: newestIndex, path: newestPath }
           : null;
       } catch (e) {
-        logError(e, "Error finding newest frame");
+        console.error(e, "Error finding newest frame");
         return null;
       }
     }
@@ -334,18 +375,26 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
               pidFile.get_path(),
             );
             if (success) {
-              let pid = parseInt(imports.byteArray.toString(contents).trim());
+              // Fixed deprecated module usage (Issue #2)
+              let pid = parseInt(new TextDecoder().decode(contents).trim());
               if (!isNaN(pid)) {
-                // Kill the process and its children
-                GLib.spawn_command_line_sync(
-                  `pkill -P ${pid} 2>/dev/null || true`,
+                // Kill the process and its children asynchronously
+                let pkillProc = Gio.Subprocess.new(
+                  ["pkill", "-P", pid.toString()],
+                  Gio.SubprocessFlags.STDERR_SILENCE,
                 );
-                GLib.spawn_command_line_sync(`kill ${pid} 2>/dev/null || true`);
+                pkillProc.wait_async(null, () => {
+                  let killProc = Gio.Subprocess.new(
+                    ["kill", pid.toString()],
+                    Gio.SubprocessFlags.STDERR_SILENCE,
+                  );
+                  killProc.wait_async(null, () => {});
+                });
               }
             }
           }
         } catch (e) {
-          logError(e, "Error killing process");
+          console.error(e, "Error killing process");
         }
       }
 
@@ -366,7 +415,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         try {
           this._cameraProcess.force_exit();
         } catch (e) {
-          logError(e);
+          console.error(e);
         }
         this._cameraProcess = null;
       }
@@ -376,31 +425,85 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         if (this._cameraOutput.get_parent()) {
           this._previewContainer.remove_child(this._cameraOutput);
         }
-        this._cameraOutput.destroy();
         this._cameraOutput = null;
       }
 
-      // Clean up the temporary directory
+      // Clean up the temporary directory with GJS/Gio
       if (this._tempDir) {
         try {
-          // Make sure all related processes are dead
-          GLib.spawn_command_line_sync(
-            `pkill -f "${this._tempDir}" 2>/dev/null || true`,
+          // Kill any related processes asynchronously
+          let proc = Gio.Subprocess.new(
+            ["pkill", "-f", this._tempDir],
+            Gio.SubprocessFlags.STDERR_SILENCE,
           );
 
-          // Remove the directory and all contents
-          GLib.spawn_command_line_sync(`rm -rf "${this._tempDir}"`);
-          this._tempDir = null;
-          this._framesDir = null;
+          proc.wait_async(null, () => {
+            // Now remove the directory and its contents
+            let dir = Gio.File.new_for_path(this._tempDir);
+            this._recursiveDelete(dir);
+
+            this._tempDir = null;
+            this._framesDir = null;
+          });
         } catch (e) {
-          logError(e, "Error cleaning up");
+          console.error(e, "Error cleaning up");
         }
       }
 
       this._spinner.visible = false;
     }
 
+    _recursiveDelete(file) {
+      try {
+        // If it's a directory, delete contents first
+        let fileType = file.query_file_type(Gio.FileQueryInfoFlags.NONE, null);
+
+        if (fileType === Gio.FileType.DIRECTORY) {
+          let children = file.enumerate_children(
+            "standard::name",
+            Gio.FileQueryInfoFlags.NONE,
+            null,
+          );
+          let info;
+
+          while ((info = children.next_file(null))) {
+            let child = file.get_child(info.get_name());
+            this._recursiveDelete(child);
+          }
+        }
+
+        // Now delete the file/directory itself
+        file.delete(null);
+      } catch (e) {
+        console.error(`Error deleting file ${file.get_path()}: ${e.message}`);
+      }
+    }
+
+    _removeAllPadding() {
+      // Now implemented to properly adjust the styling
+      if (this.menu.box) {
+        // Apply styles directly to improve compatibility
+        this.menu.box.style = "padding: 0; margin: 0;";
+
+        // Find and style the popup-menu-content
+        let content = this.menu.box.get_parent();
+        if (
+          content &&
+          content.style_class &&
+          content.style_class.includes("popup-menu-content")
+        ) {
+          content.style = "padding: 8px; margin: 0; border-radius: 12px;";
+        }
+      }
+    }
+
     destroy() {
+      // Fix for Issue #1: Clean up menu style timeout if active
+      if (this._menuStyleTimeout) {
+        GLib.source_remove(this._menuStyleTimeout);
+        this._menuStyleTimeout = null;
+      }
+
       this._stopCameraPreview();
       super.destroy();
     }
@@ -411,21 +514,9 @@ export default class CamPeekExtension extends Extension {
   enable() {
     this._indicator = new CamPeekIndicator(this);
     Main.panel.addToStatusArea("campeek", this._indicator);
-
-    // Load the stylesheet for smooth transitions
-    this._loadStylesheet();
-  }
-
-  _loadStylesheet() {
-    let theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
-    theme.load_stylesheet(this.path + "/stylesheet.css");
   }
 
   disable() {
-    // Unload the stylesheet
-    let theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
-    theme.unload_stylesheet(this.path + "/stylesheet.css");
-
     this._indicator.destroy();
     this._indicator = null;
   }
