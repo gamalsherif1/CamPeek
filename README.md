@@ -94,3 +94,7 @@ If you like this project, consider buying me a coffee:
 </a>
 
 Made with ❤️ by **Gamal Sherif**
+
+---
+
+![CamPeek Screenshot](screenshots/diagram.png)
