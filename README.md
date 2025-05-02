@@ -4,65 +4,87 @@
   <img src="CamPeek%40gamalsherif1.github.io/icons/mirror.png" width="200" alt="CamPeek Logo"/>
 </p>
 
-🪞 CamPeek — Instant webcam preview for GNOME Shell (Linux alternative to macOS's Hand Mirror)  
+🪞 **CamPeek** — Instant webcam preview for GNOME Shell (Linux alternative to macOS's Hand Mirror)  
 > ⚠️ **Note:** CamPeek is compatible with **GNOME Shell 48 only**.
-----
+
+---
+
+## 📥 Install via GNOME Extensions (Recommended)
+
+You can install CamPeek directly from the GNOME Extensions website:
+
+👉 **[Click here to install CamPeek](https://extensions.gnome.org/extension/8090/campeek/)**
+
+Make sure you have the [GNOME Shell integration browser extension](https://wiki.gnome.org/Projects/GnomeShellIntegration) and native host connector installed.
+
+---
+
+## ⚙️ Manual Installation (Optional)
+
+1. **Clone the repository:**
+```bash
+git clone https://github.com/gamalsherif1/CamPeek.git
+cd CamPeek
+./install.sh
+```
+
+This will:
+- 🔗 Link the extension to your GNOME Shell
+- ✅ Enable it automatically
+- 🔄 Ask if you'd like to reload GNOME Shell for changes to take effect
+
+---
 
 ## 📸 What is CamPeek?
 
-CamPeek gives you a **quick, floating webcam window** right from your GNOME panel — just like a mirror on your screen. Whether you're hopping into a video call or just want to make sure everything looks good, CamPeek is your lightweight, privacy-friendly tool!
+CamPeek gives you a **quick, floating webcam window** from your GNOME panel — like a mirror on your screen. Whether you're about to join a video call or want to check your lighting, CamPeek is a lightweight, privacy-conscious companion.
 
 ---
 
 ## ✨ Features
 
 - 🖼️ Clean, borderless always-on-top preview  
-- 🖱️ Click once to show or hide your webcam feed  
-- 🔐 Privacy-friendly (live only – no recording or saving)  
-- 🐧 Built for GNOME Shell on Linux
+- 🖱️ Single click to toggle webcam feed  
+- 🔐 No recording or saving — live-only feed  
+- 🐧 Designed for GNOME Shell on Linux
 
-## 📸 Preview
+---
+
+## 🖼️ Preview
 
 ![CamPeek Screenshot](screenshots/thumbnail.png)
----
-
-## ⚙️ Installation
-
-1. 🧬 **Clone the repository:**
-```bash
-git clone https://github.com/gamalsherif1/CamPeek.git
-cd CamPeek
-./install.sh
-```
-This will:
-- 🔁 Link the extension to your GNOME Shell
-- ✅ Enable it
-- 🔃 Ask if you'd like to log out of GNOME Shell (for instant changes)
 
 ---
 
-🧪 How to Use: <br>
-Click the 🪞 CamPeek icon in the top bar to open/close the preview
-The preview window will stay above all other apps
-Perfect for a last check before going live
+## 🧪 How to Use
+
+- Click the 🪞 CamPeek icon in the GNOME top bar
+- A floating webcam preview will open — always on top
+- Click again to close it
 
 ---
 
-❓ FAQ: <br>
-Does it record or save video?
-🔐 No. CamPeek is just a live mirror — nothing is saved.
+## ❓ FAQ
 
-Can I resize or move the window?
-Not yet — planned for future versions! 🎯
+**Q: Does it record or save video?**  
+**A:** 🔐 No. CamPeek is just a live mirror — nothing is saved.
 
-
----
-👨‍💻 Contributing: <br>
-Pull requests are welcome! If you have an idea or found a bug, feel free to open an issue or submit a PR.
+**Q: Can I resize or move the window?**  
+**A:** Not yet — this is planned for a future version! 🎯
 
 ---
-📄 License
+
+## 👨‍💻 Contributing
+
+Pull requests are welcome!  
+Found a bug or have an idea? Open an issue or submit a PR.
+
+---
+
+## 📄 License
+
 🧾 GPL-2.0-or-later
+
 ---
 
-Made with ❤️ by Gamal Sherif
+Made with ❤️ by **Gamal Sherif**
