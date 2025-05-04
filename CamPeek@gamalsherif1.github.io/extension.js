@@ -85,13 +85,13 @@ const CamPeekIndicator = GObject.registerClass(
       });
       this.menu.addMenuItem(previewItem);
 
-      // Create a container for the camera preview with 3:2 aspect ratio
+      // Create a container for the camera preview with 16:9 aspect ratio
       this._previewContainer = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
         x_expand: true,
         y_expand: true,
-        width: 480, // 3:2 aspect ratio (480:320)
-        height: 320, // 3:2 aspect ratio
+        width: 480, // 16:9 aspect ratio (480:270)
+        height: 270, // 16:9 aspect ratio
       });
 
       // Add the preview container to the menu item
@@ -148,6 +148,8 @@ const CamPeekIndicator = GObject.registerClass(
       this._cameraProcess = null;
       this._refreshTimeout = null;
       this._cameraOutput = null;
+      this._cameraInUseMessage = null;
+      this._lastCameraCheck = null;
     }
 
     _startCameraPreview() {
@@ -157,6 +159,167 @@ const CamPeekIndicator = GObject.registerClass(
 
       this._spinner.visible = true;
 
+      // Remove any existing camera-in-use message
+      if (this._cameraInUseMessage && this._cameraInUseMessage.get_parent()) {
+        this._previewContainer.remove_child(this._cameraInUseMessage);
+        this._cameraInUseMessage = null;
+      }
+
+      // Check if camera is already in use
+      this._checkCameraAvailability((isAvailable) => {
+        if (isAvailable) {
+          // Camera is available, proceed with normal camera startup
+          this._actuallyStartCamera();
+        } else {
+          // Camera is in use, show message
+          this._showCameraInUseMessage();
+        }
+      });
+    }
+
+    _checkCameraAvailability(callback) {
+      // Add caching to avoid frequent repeated checks
+      const now = GLib.get_monotonic_time() / 1000; // Convert to milliseconds
+      if (this._lastCameraCheck && now - this._lastCameraCheck.time < 2000) {
+        // Use cached result if it's less than 2 seconds old
+        callback(this._lastCameraCheck.isAvailable);
+        return;
+      }
+
+      try {
+        // Use lsof which is much faster than v4l2-ctl for checking device usage
+        let proc = Gio.Subprocess.new(
+          ["lsof", "/dev/video0"],
+          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        );
+
+        proc.communicate_utf8_async(null, null, (proc, result) => {
+          try {
+            let [, stdout, stderr] = proc.communicate_utf8_finish(result);
+            let exitStatus = proc.get_exit_status();
+
+            // If lsof returns exit code 0, it found processes using the camera
+            // Exit code 1 means no processes are using it (it's available)
+            let isAvailable = exitStatus === 1;
+
+            // Cache the result
+            this._lastCameraCheck = {
+              time: GLib.get_monotonic_time() / 1000,
+              isAvailable: isAvailable,
+            };
+
+            callback(isAvailable);
+          } catch (e) {
+            console.error("CamPeek: Error checking camera with lsof:", e);
+            this._tryFastCameraOpen(callback);
+          }
+        });
+      } catch (e) {
+        console.error("CamPeek: Error initiating camera check:", e);
+        this._tryFastCameraOpen(callback);
+      }
+    }
+
+    _tryFastCameraOpen(callback) {
+      try {
+        // Much faster than previous method:
+        // - Shorter timeout (0.5s instead of 2s)
+        // - Only one buffer requested
+        let testProc = Gio.Subprocess.new(
+          [
+            "timeout",
+            "0.5",
+            "gst-launch-1.0",
+            "v4l2src",
+            "device=/dev/video0",
+            "num-buffers=1",
+            "!",
+            "fakesink",
+          ],
+          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE,
+        );
+
+        testProc.communicate_utf8_async(null, null, (proc, result) => {
+          try {
+            let [, stdout, stderr] = proc.communicate_utf8_finish(result);
+            let exitStatus = proc.get_exit_status();
+
+            // Cache the result
+            let isAvailable = exitStatus === 0;
+            this._lastCameraCheck = {
+              time: GLib.get_monotonic_time() / 1000,
+              isAvailable: isAvailable,
+            };
+
+            callback(isAvailable);
+          } catch (e) {
+            console.error("CamPeek: Error in camera test:", e);
+            callback(false);
+          }
+        });
+      } catch (e) {
+        console.error("CamPeek: Error setting up camera test:", e);
+        callback(false);
+      }
+    }
+
+    _showCameraInUseMessage() {
+      // Hide the spinner
+      this._spinner.visible = false;
+
+      // Create and show the camera-in-use message
+      this._cameraInUseMessage = new St.BoxLayout({
+        vertical: true,
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      // Add an icon
+      let icon = new St.Icon({
+        icon_name: "camera-disabled-symbolic",
+        icon_size: 48,
+        style_class: "camera-in-use-icon",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(icon);
+
+      // Add a message
+      let label = new St.Label({
+        text: "Camera is currently in use by another application",
+        style_class: "camera-in-use-message",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(label);
+
+      // Add a retry button
+      let buttonBox = new St.BoxLayout({
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+        style_class: "camera-retry-box",
+      });
+
+      let button = new St.Button({
+        label: "Try Again",
+        style_class: "camera-retry-button button",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+
+      button.connect("clicked", () => {
+        this._previewContainer.remove_child(this._cameraInUseMessage);
+        this._cameraInUseMessage = null;
+        this._startCameraPreview();
+      });
+
+      buttonBox.add_child(button);
+      this._cameraInUseMessage.add_child(buttonBox);
+
+      // Add to container
+      this._previewContainer.add_child(this._cameraInUseMessage);
+    }
+
+    _actuallyStartCamera() {
       try {
         // Create a temporary directory for our frames
         let tempDir = GLib.build_filenamev([
@@ -185,7 +348,7 @@ const CamPeekIndicator = GObject.registerClass(
         this._framesDir = GLib.build_filenamev([tempDir, "frames"]);
         GLib.mkdir_with_parents(this._framesDir, 0o755);
 
-        // Create a script that uses GStreamer for more efficient frame capture with 3:2 aspect ratio
+        // Create a script that uses GStreamer for more efficient frame capture with 16:9 aspect ratio
         let scriptPath = GLib.build_filenamev([tempDir, "capture.sh"]);
         let scriptContent = `#!/bin/bash
 
@@ -195,9 +358,9 @@ echo $$ > "${tempDir}/pid"
 # Clean up any existing frames
 rm -f ${this._framesDir}/frame_*.jpg 2>/dev/null
 
-# Use GStreamer for frame capture with 3:2 aspect ratio (480x320)
+# Use GStreamer for frame capture with 16:9 aspect ratio (480x270)
 gst-launch-1.0 v4l2src device=/dev/video0 ! \
-videoconvert ! videoscale ! video/x-raw,width=480,height=320,framerate=30/1 ! \
+videoconvert ! videoscale ! video/x-raw,width=480,height=270,framerate=30/1 ! \
 queue max-size-buffers=2 leaky=downstream ! \
 videoflip method=horizontal-flip ! jpegenc quality=85 ! \
 multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-messages=true
@@ -265,6 +428,10 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           () => {
             if (this._spinner.visible) {
               this._spinner.visible = false;
+
+              // If spinner is still visible after 5 seconds, camera likely failed to start
+              // Show a message indicating camera might be in use
+              this._showCameraInUseMessage();
             }
             this._startTimeout = 0;
             return GLib.SOURCE_REMOVE;
@@ -273,6 +440,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       } catch (e) {
         console.error(e, "Error starting camera");
         this._spinner.visible = false;
+        this._showCameraInUseMessage();
       }
     }
 
@@ -428,6 +596,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         this._cameraOutput = null;
       }
 
+      // Clean up any camera-in-use message
+      if (this._cameraInUseMessage && this._cameraInUseMessage.get_parent()) {
+        this._previewContainer.remove_child(this._cameraInUseMessage);
+        this._cameraInUseMessage = null;
+      }
+
       // Clean up the temporary directory with GJS/Gio
       if (this._tempDir) {
         try {
@@ -503,6 +677,9 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         GLib.source_remove(this._menuStyleTimeout);
         this._menuStyleTimeout = null;
       }
+
+      // Clean up camera check cache
+      this._lastCameraCheck = null;
 
       this._stopCameraPreview();
       super.destroy();
