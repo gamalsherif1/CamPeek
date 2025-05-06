@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.campeek" path="/org/gnome/shell/extensions/campeek/">
+    <key name="camera-device" type="s">
+      <default>'/dev/video0'</default>
+      <summary>Camera device path</summary>
+      <description>Path to the camera device (e.g., /dev/video0)</description>
+    </key>
+  </schema>
+</schemalist>

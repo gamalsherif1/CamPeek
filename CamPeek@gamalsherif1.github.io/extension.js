@@ -1,4 +1,4 @@
-// extension.js - Aggressive fix for centering
+// extension.js - With camera selection menu - Fixed menu behavior
 
 import GObject from "gi://GObject";
 import St from "gi://St";
@@ -6,7 +6,10 @@ import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import Clutter from "gi://Clutter";
 
-import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
+import {
+  Extension,
+  gettext as _,
+} from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as PanelMenu from "resource:///org/gnome/shell/ui/panelMenu.js";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
@@ -18,6 +21,15 @@ const CamPeekIndicator = GObject.registerClass(
       super._init(0.5, "CamPeek", false);
 
       this._extension = extension;
+
+      // Get settings
+      this._settings = extension.getSettings();
+
+      // Get saved camera device or use default
+      this._cameraDevice = this._settings.get_string("camera-device");
+      if (!this._cameraDevice) {
+        this._cameraDevice = "/dev/video0";
+      }
 
       // Set up a container for the icon with explicit centering
       let topBox = new St.BoxLayout({
@@ -115,6 +127,17 @@ const CamPeekIndicator = GObject.registerClass(
       // Track timeouts
       this._menuStyleTimeout = null;
       this._positionFixTimeouts = [];
+      this._globalClickId = null;
+
+      // Add click-outside handling for the main menu
+      this.menu.actor.connect("button-press-event", (actor, event) => {
+        // If we detect a click outside the menu area
+        if (event.get_source() !== actor) {
+          this.menu.close();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+      });
 
       // Connect to menu open-state-changed signal
       this.menu.connect("open-state-changed", (menu, isOpen) => {
@@ -137,12 +160,39 @@ const CamPeekIndicator = GObject.registerClass(
               return GLib.SOURCE_REMOVE;
             },
           );
+
+          // Add global click handler
+          this._globalClickId = global.stage.connect(
+            "button-press-event",
+            (actor, event) => {
+              // Close menu when clicking outside
+              if (this.menu.isOpen) {
+                this.menu.close();
+              }
+            },
+          );
         } else {
           this._stopCameraPreview();
 
           // Clean up any position fix timeouts
           this._clearPositionFixTimeouts();
+
+          // Remove global click handler
+          if (this._globalClickId) {
+            global.stage.disconnect(this._globalClickId);
+            this._globalClickId = null;
+          }
         }
+      });
+
+      // Add button-press-event handler for right-click
+      this.connect("button-press-event", (actor, event) => {
+        // Check if it's right button (button 3)
+        if (event.get_button() === 3) {
+          this._showCameraSelectionMenu();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
       });
 
       this._cameraProcess = null;
@@ -151,9 +201,156 @@ const CamPeekIndicator = GObject.registerClass(
       this._imageActor = null;
       this._imageWrapper = null;
       this._cameraInUseMessage = null;
+    }
 
-      // Default camera device
-      this._cameraDevice = "/dev/video0";
+    _showCameraSelectionMenu() {
+      // First, close the preview menu if it's open
+      if (this.menu.isOpen) {
+        this.menu.close();
+      }
+
+      // Create a new menu for camera selection
+      let cameraMenu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
+
+      // Add available cameras to the menu
+      this._populateCameraMenu(cameraMenu);
+
+      // We need to manually position and show it
+      Main.uiGroup.add_child(cameraMenu.actor);
+
+      // Track this menu's global click handler
+      let outsideClickId = null;
+
+      // Make the menu modal so clicking outside closes it
+      cameraMenu.actor.connect("button-press-event", (actor, event) => {
+        // Close the menu if clicked outside
+        if (event.get_source() !== actor) {
+          cameraMenu.close();
+          return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+      });
+
+      cameraMenu.open();
+
+      // Connect to global button press to close when clicking outside
+      outsideClickId = global.stage.connect(
+        "button-press-event",
+        (actor, event) => {
+          if (cameraMenu.isOpen) {
+            cameraMenu.close();
+          }
+        },
+      );
+
+      // Close the menu when a selection is made or clicked outside
+      cameraMenu.connect("open-state-changed", (menu, isOpen) => {
+        if (!isOpen) {
+          // Disconnect the global click handler when menu closes
+          if (outsideClickId) {
+            global.stage.disconnect(outsideClickId);
+            outsideClickId = null;
+          }
+
+          Main.uiGroup.remove_child(menu.actor);
+          menu.destroy();
+        }
+      });
+    }
+
+    _populateCameraMenu(menu) {
+      // Add a title item
+      let titleItem = new PopupMenu.PopupMenuItem(_("Select Camera Device"));
+      titleItem.setSensitive(false);
+      menu.addMenuItem(titleItem);
+
+      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+      // Find available cameras
+      let cameras = this._findAvailableCameras();
+
+      // Add each camera to the menu
+      let activeCamera = this._cameraDevice;
+      cameras.forEach((camera) => {
+        let isActive = camera.device === activeCamera;
+        let item = new PopupMenu.PopupMenuItem(camera.label);
+
+        // Mark the current active camera
+        if (isActive) {
+          item.setOrnament(PopupMenu.Ornament.DOT);
+        }
+
+        item.connect("activate", () => {
+          this._selectCamera(camera.device);
+        });
+
+        menu.addMenuItem(item);
+      });
+
+      // Add a refresh option at the bottom
+      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+      let refreshItem = new PopupMenu.PopupMenuItem(_("Refresh Camera List"));
+      refreshItem.connect("activate", () => {
+        menu.close();
+        this._showCameraSelectionMenu();
+      });
+      menu.addMenuItem(refreshItem);
+    }
+
+    _findAvailableCameras() {
+      let cameras = [];
+
+      try {
+        // Use GLib to execute a shell command to find cameras
+        let [success, stdout, stderr] =
+          GLib.spawn_command_line_sync("ls -1 /dev/video*");
+
+        if (success) {
+          // Convert the output to a string
+          let deviceOutput = new TextDecoder().decode(stdout).trim();
+          let devices = deviceOutput.split("\n");
+
+          // Add each found device
+          devices.forEach((device, index) => {
+            if (device) {
+              // Try to get a friendly name (this is basic - could be enhanced)
+              let friendlyName = `Camera ${index}`;
+
+              // Add to our list
+              cameras.push({
+                device: device,
+                label: `${friendlyName} (${device})`,
+              });
+            }
+          });
+        }
+      } catch (e) {
+        console.error("Error finding cameras:", e);
+      }
+
+      // If no cameras found, add a placeholder
+      if (cameras.length === 0) {
+        cameras.push({
+          device: "/dev/video0",
+          label: "Default Camera (/dev/video0)",
+        });
+      }
+
+      return cameras;
+    }
+
+    _selectCamera(device) {
+      // Update the camera device
+      this._cameraDevice = device;
+
+      // Save the selection to settings
+      this._settings.set_string("camera-device", device);
+
+      // If camera is currently active, restart it
+      if (this.menu.isOpen) {
+        this._stopCameraPreview();
+        this._startCameraPreview();
+      }
     }
 
     _scheduleMenuPositionFix() {
@@ -224,7 +421,6 @@ const CamPeekIndicator = GObject.registerClass(
       }
     }
 
-    // [Rest of the methods remain the same]
     _startCameraPreview() {
       if (this._cameraProcess) {
         return; // Camera already running
@@ -679,7 +875,6 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         console.error(`Error deleting file ${file.get_path()}: ${e.message}`);
       }
     }
-
     _removeAllPadding() {
       // Now implemented to properly adjust the styling
       if (this.menu.box) {
@@ -713,6 +908,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       // Clean up position fix timeouts
       this._clearPositionFixTimeouts();
 
+      // Clean up global click handler if active
+      if (this._globalClickId) {
+        global.stage.disconnect(this._globalClickId);
+        this._globalClickId = null;
+      }
+
       this._stopCameraPreview();
       super.destroy();
     }
@@ -728,5 +929,10 @@ export default class CamPeekExtension extends Extension {
   disable() {
     this._indicator.destroy();
     this._indicator = null;
+  }
+
+  getSettings() {
+    // Use the Extension class's correct method
+    return super.getSettings("org.gnome.shell.extensions.campeek");
   }
 }
