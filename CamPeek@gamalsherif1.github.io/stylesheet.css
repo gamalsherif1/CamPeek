@@ -2,11 +2,18 @@
 /* Style for the frame with transition effect */
 .campeek-frame {
     transition: opacity 100ms ease-in-out;
-    margin: 3px;
     padding: 0;
     background: none;
     border: none;
-    border-radius: 8px;
+    border-radius: 12px;
+}
+
+/* Style for the image inside the frame */
+.campeek-frame-image {
+    width: 480px;
+    height: 270px;
+    border-radius: 12px; /* Add rounded corners */
+    overflow: hidden;
 }
 
 /* Style for the preview menu item */
@@ -14,7 +21,7 @@
     padding: 0;
     margin: 0;
     background: none;
-    border-radius: 8px;
+    border-radius: 12px;
 }
 
 /* Panel button styling to ensure icon appears */
