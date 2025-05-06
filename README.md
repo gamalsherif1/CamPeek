@@ -34,9 +34,8 @@ CamPeek gives you a **quick, floating webcam window** from your GNOME panel — 
 
 You can install CamPeek directly from the GNOME Extensions website:
 
-<a href="https://extensions.gnome.org/extension/8092/campeek/">
-  <img src="https://extensions.gnome.org/static/images/badge.svg" alt="Get it on GNOME Extensions" width="200"/>
-</a>
+[![Get it on GNOME Extensions](https://extensions.gnome.org/static/images/badge.svg)](https://extensions.gnome.org/extension/8092/campeek/)
+
 ---
 
 ## ⚙️ Manual Installation (Optional)
