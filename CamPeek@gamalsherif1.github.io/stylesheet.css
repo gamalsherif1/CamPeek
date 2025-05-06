@@ -18,26 +18,39 @@
 
 /* Style for the preview menu item */
 .campeek-preview-item {
-    padding: 0;
-    margin: 0;
-    background: none;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: none !important;
     border-radius: 12px;
 }
 
-/* Panel button styling to ensure icon appears */
-.panel-button {
-    -natural-hpadding: 6px;
-    -minimum-hpadding: 6px;
+/* Panel button styling to ensure icon appears centered */
+.panel-button.campeek-button {
+    -natural-hpadding: 6px !important;
+    -minimum-hpadding: 6px !important;
     font-weight: bold;
     color: #eeeeec;
     transition-duration: 100ms;
+    text-align: center !important;
+}
+
+/* Style the container box */
+.campeek-box {
+    /* Force centered content */
+    text-align: center !important;
+    width: 22px !important;
 }
 
 /* Style the indicator icon in the top panel */
-.system-status-icon {
+.system-status-icon.campeek-icon {
     icon-size: 16px;
-    padding: 0 4px;
-    margin: 0;
+    padding: 0;
+    margin: 0 auto !important;
+}
+
+/* Force the popup menu to center */
+.popup-menu-content {
+    transform-origin: center top !important;
 }
 
 /* Add a style for the spinner */

@@ -1,27 +1,10 @@
-/* extension.js
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- */
+// extension.js - Aggressive fix for centering
 
 import GObject from "gi://GObject";
 import St from "gi://St";
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import Clutter from "gi://Clutter";
-// Removed unused GdkPixbuf import (Issue #3)
 
 import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
@@ -31,52 +14,67 @@ import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 const CamPeekIndicator = GObject.registerClass(
   class CamPeekIndicator extends PanelMenu.Button {
     _init(extension) {
-      super._init(0.0, "CamPeek");
+      // Call parent constructor with more explicit parameters
+      super._init(0.5, "CamPeek", false);
 
       this._extension = extension;
 
-      // Create a box for the icon
+      // Set up a container for the icon with explicit centering
       let topBox = new St.BoxLayout({
-        style_class: "panel-status-menu-box",
+        style_class: "panel-status-menu-box campeek-box",
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
       });
 
       // Use the icon from the specified path
       let iconPath = this._extension.path + "/icons/mirror.png";
-      console.log("CamPeek: Looking for icon at " + iconPath);
 
-      // Try to load the custom icon with error checking
+      // Try to load the custom icon
       let iconFile = Gio.File.new_for_path(iconPath);
       let gicon = null;
 
       try {
         if (iconFile.query_exists(null)) {
           gicon = new Gio.FileIcon({ file: iconFile });
-          console.log(
-            "CamPeek: Custom icon loaded successfully from " + iconPath,
-          );
-        } else {
-          console.log("CamPeek: Icon file does not exist at: " + iconPath);
         }
       } catch (e) {
         console.error(e, "CamPeek: Error loading custom icon");
       }
 
-      // Add the icon to the panel with fallback
+      // Add the icon to the panel with fallback and explicit centering
       this._icon = new St.Icon({
         gicon: gicon,
         icon_name: gicon ? null : "camera-web-symbolic", // Fallback if gicon is null
-        style_class: "system-status-icon",
+        style_class: "system-status-icon campeek-icon",
         icon_size: 16,
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
       });
 
       // Add the icon to the box
       topBox.add_child(this._icon);
 
-      // Add the box to the button
+      // Use bin layout for the button to ensure centering
+      this.set_layout_manager(new Clutter.BinLayout());
+      this.add_style_class_name("campeek-button");
       this.add_child(topBox);
 
-      // Clear all default menu items if any exist
+      // Configure the menu
       this.menu.removeAll();
+
+      // Override the default menu opening mechanism
+      this._originalOpenMenuFunc = this.menu.open;
+      this.menu.open = (animate) => {
+        // First call the original method
+        this._originalOpenMenuFunc.call(this.menu, animate);
+
+        // Schedule multiple adjustment attempts to ensure centering
+        this._scheduleMenuPositionFix();
+      };
 
       // Create a menu item to contain the camera preview
       let previewItem = new PopupMenu.PopupBaseMenuItem({
@@ -85,13 +83,13 @@ const CamPeekIndicator = GObject.registerClass(
       });
       this.menu.addMenuItem(previewItem);
 
-      // Create a container for the camera preview with 16:9 aspect ratio
+      // Create a container for the camera preview
       this._previewContainer = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
         x_expand: true,
         y_expand: true,
-        width: 480, // 16:9 aspect ratio (480:270)
-        height: 270, // 16:9 aspect ratio
+        width: 480,
+        height: 270,
       });
 
       // Add the preview container to the menu item
@@ -108,18 +106,17 @@ const CamPeekIndicator = GObject.registerClass(
       });
       this._previewContainer.add_child(this._spinner);
 
-      // Configure menu position to appear directly under the icon
-      this.menu.setSourceAlignment(0.5); // Center align the menu with the button
-
-      // Make sure the menu appears below the icon
+      // Setup menu arrow and alignment
       if (this.menu._boxPointer) {
         this.menu._boxPointer._arrowSide = St.Side.TOP;
+        this.menu._boxPointer.setSourceAlignment(0.5);
       }
 
-      // Track menu timeout (for Issue #1)
+      // Track timeouts
       this._menuStyleTimeout = null;
+      this._positionFixTimeouts = [];
 
-      // Connect to menu opening and closing signals
+      // Connect to menu open-state-changed signal
       this.menu.connect("open-state-changed", (menu, isOpen) => {
         if (isOpen) {
           this._startCameraPreview();
@@ -130,7 +127,7 @@ const CamPeekIndicator = GObject.registerClass(
             this._menuStyleTimeout = null;
           }
 
-          // Apply styling to menu after it's opened - now tracked for cleanup
+          // Apply styling to menu
           this._menuStyleTimeout = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
             10,
@@ -142,6 +139,9 @@ const CamPeekIndicator = GObject.registerClass(
           );
         } else {
           this._stopCameraPreview();
+
+          // Clean up any position fix timeouts
+          this._clearPositionFixTimeouts();
         }
       });
 
@@ -152,10 +152,79 @@ const CamPeekIndicator = GObject.registerClass(
       this._imageWrapper = null;
       this._cameraInUseMessage = null;
 
-      // Default camera device - can be adjusted if needed
+      // Default camera device
       this._cameraDevice = "/dev/video0";
     }
 
+    _scheduleMenuPositionFix() {
+      // Clear any existing timeouts
+      this._clearPositionFixTimeouts();
+
+      // Schedule multiple position fixes at different times
+      // to ensure it works even if the menu changes size
+      [0, 50, 100, 250, 500].forEach((delay) => {
+        let id = GLib.timeout_add(GLib.PRIORITY_HIGH, delay, () => {
+          this._fixMenuPosition();
+
+          // Remove this timeout from our tracking array
+          this._positionFixTimeouts = this._positionFixTimeouts.filter(
+            (t) => t !== id,
+          );
+          return GLib.SOURCE_REMOVE;
+        });
+
+        this._positionFixTimeouts.push(id);
+      });
+    }
+
+    _clearPositionFixTimeouts() {
+      // Clean up any position fix timeouts
+      this._positionFixTimeouts.forEach((id) => {
+        if (id) {
+          GLib.source_remove(id);
+        }
+      });
+      this._positionFixTimeouts = [];
+    }
+
+    _fixMenuPosition() {
+      try {
+        // Only try to fix position if menu is open
+        if (!this.menu.isOpen) {
+          return;
+        }
+
+        // Get button position and size
+        let [buttonX, buttonY] = this.get_transformed_position();
+        let buttonWidth = this.get_width();
+        let buttonHeight = this.get_height();
+
+        // Get the menu actor
+        let menuActor = this.menu.actor || this.menu;
+        if (!menuActor) return;
+
+        // Get menu size
+        let menuWidth = menuActor.get_width();
+        let menuHeight = menuActor.get_height();
+
+        // Calculate center position for the menu
+        let targetX = Math.round(buttonX + buttonWidth / 2 - menuWidth / 2);
+
+        // Set menu position
+        menuActor.set_position(targetX, menuActor.get_y());
+
+        // Also try to adjust the arrow position
+        if (this.menu._boxPointer && this.menu._boxPointer._arrowOrigin) {
+          this.menu._boxPointer._arrowOrigin.set_x_align(
+            Clutter.ActorAlign.CENTER,
+          );
+        }
+      } catch (e) {
+        console.error("Error fixing menu position:", e);
+      }
+    }
+
+    // [Rest of the methods remain the same]
     _startCameraPreview() {
       if (this._cameraProcess) {
         return; // Camera already running
@@ -630,11 +699,19 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
     }
 
     destroy() {
-      // Fix for Issue #1: Clean up menu style timeout if active
+      // Restore original open function
+      if (this._originalOpenMenuFunc) {
+        this.menu.open = this._originalOpenMenuFunc;
+      }
+
+      // Clean up menu style timeout if active
       if (this._menuStyleTimeout) {
         GLib.source_remove(this._menuStyleTimeout);
         this._menuStyleTimeout = null;
       }
+
+      // Clean up position fix timeouts
+      this._clearPositionFixTimeouts();
 
       this._stopCameraPreview();
       super.destroy();
@@ -645,7 +722,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
 export default class CamPeekExtension extends Extension {
   enable() {
     this._indicator = new CamPeekIndicator(this);
-    Main.panel.addToStatusArea("campeek", this._indicator);
+    Main.panel.addToStatusArea("campeek", this._indicator, 0, "right");
   }
 
   disable() {
