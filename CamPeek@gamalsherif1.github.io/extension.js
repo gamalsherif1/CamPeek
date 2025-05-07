@@ -128,6 +128,8 @@ const CamPeekIndicator = GObject.registerClass(
       this._menuStyleTimeout = null;
       this._positionFixTimeouts = [];
       this._globalClickId = null;
+      this._buttonPressHandler = null;
+      this._outsideClickId = null;
 
       // Add click-outside handling for the main menu
       this.menu.actor.connect("button-press-event", (actor, event) => {
@@ -186,14 +188,15 @@ const CamPeekIndicator = GObject.registerClass(
       });
 
       // Add button-press-event handler for right-click
-      this.connect("button-press-event", (actor, event) => {
+      this._buttonPressHandler = (actor, event) => {
         // Check if it's right button (button 3)
         if (event.get_button() === 3) {
           this._showCameraSelectionMenu();
           return Clutter.EVENT_STOP;
         }
         return Clutter.EVENT_PROPAGATE;
-      });
+      };
+      this.connect("button-press-event", this._buttonPressHandler);
 
       this._cameraProcess = null;
       this._refreshTimeout = null;
@@ -218,9 +221,6 @@ const CamPeekIndicator = GObject.registerClass(
       // We need to manually position and show it
       Main.uiGroup.add_child(cameraMenu.actor);
 
-      // Track this menu's global click handler
-      let outsideClickId = null;
-
       // Make the menu modal so clicking outside closes it
       cameraMenu.actor.connect("button-press-event", (actor, event) => {
         // Close the menu if clicked outside
@@ -234,7 +234,7 @@ const CamPeekIndicator = GObject.registerClass(
       cameraMenu.open();
 
       // Connect to global button press to close when clicking outside
-      outsideClickId = global.stage.connect(
+      this._outsideClickId = global.stage.connect(
         "button-press-event",
         (actor, event) => {
           if (cameraMenu.isOpen) {
@@ -247,9 +247,9 @@ const CamPeekIndicator = GObject.registerClass(
       cameraMenu.connect("open-state-changed", (menu, isOpen) => {
         if (!isOpen) {
           // Disconnect the global click handler when menu closes
-          if (outsideClickId) {
-            global.stage.disconnect(outsideClickId);
-            outsideClickId = null;
+          if (this._outsideClickId) {
+            global.stage.disconnect(this._outsideClickId);
+            this._outsideClickId = null;
           }
 
           Main.uiGroup.remove_child(menu.actor);
@@ -912,6 +912,18 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       if (this._globalClickId) {
         global.stage.disconnect(this._globalClickId);
         this._globalClickId = null;
+      }
+
+      // Clean up outside click handler for camera selection menu
+      if (this._outsideClickId) {
+        global.stage.disconnect(this._outsideClickId);
+        this._outsideClickId = null;
+      }
+
+      // Disconnect button-press-event signal handler
+      if (this._buttonPressHandler) {
+        this.disconnect_by_func(this._buttonPressHandler);
+        this._buttonPressHandler = null;
       }
 
       this._stopCameraPreview();
