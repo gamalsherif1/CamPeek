@@ -5,15 +5,22 @@
     padding: 0;
     background: none;
     border: none;
-    border-radius: 12px;
+    border-radius: 12px !important;
+    overflow: hidden !important;
 }
 
 /* Style for the image inside the frame */
 .campeek-frame-image {
     width: 480px;
     height: 270px;
-    border-radius: 12px; /* Add rounded corners */
-    overflow: hidden;
+    border-radius: 12px !important; /* Add rounded corners */
+    overflow: hidden !important;
+}
+
+/* Add style for preview container to ensure rounded corners */
+.campeek-preview-container {
+    border-radius: 12px !important;
+    overflow: hidden !important;
 }
 
 /* Style for the preview menu item */
@@ -21,7 +28,8 @@
     padding: 0 !important;
     margin: 0 !important;
     background: none !important;
-    border-radius: 12px;
+    border-radius: 12px !important;
+    overflow: hidden !important;
 }
 
 /* Panel button styling to ensure icon appears centered */

@@ -1,4 +1,4 @@
-// extension.js - With camera selection menu - Fixed menu behavior
+// extension.js - Camera preview extension for GNOME Shell
 
 import GObject from "gi://GObject";
 import St from "gi://St";
@@ -17,15 +17,11 @@ import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 const CamPeekIndicator = GObject.registerClass(
   class CamPeekIndicator extends PanelMenu.Button {
     _init(extension) {
-      // Call parent constructor with more explicit parameters
       super._init(0.5, "CamPeek", false);
 
       this._extension = extension;
-
-      // Add a flag to track if camera selection menu is open
       this._isSelectionMenuOpen = false;
-
-      // Get settings
+      this._cameraSelectionMenu = null;
       this._settings = extension.getSettings();
 
       // Get saved camera device or use default
@@ -34,7 +30,26 @@ const CamPeekIndicator = GObject.registerClass(
         this._cameraDevice = "/dev/video0";
       }
 
-      // Set up a container for the icon with explicit centering
+      // Set up UI
+      this._setupUI();
+      this._setupMenu();
+      this._setupEventHandlers();
+
+      // Initialize state variables
+      this._cameraProcess = null;
+      this._refreshTimeout = null;
+      this._cameraOutput = null;
+      this._imageActor = null;
+      this._imageWrapper = null;
+      this._cameraInUseMessage = null;
+      this._menuStyleTimeout = null;
+      this._positionFixTimeouts = [];
+      this._globalClickId = null;
+      this._buttonPressHandler = null;
+      this._outsideClickId = null;
+    }
+
+    _setupUI() {
       let topBox = new St.BoxLayout({
         style_class: "panel-status-menu-box campeek-box",
         x_expand: true,
@@ -43,10 +58,8 @@ const CamPeekIndicator = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      // Use the icon from the specified path
+      // Load icon
       let iconPath = this._extension.path + "/icons/mirror.png";
-
-      // Try to load the custom icon
       let iconFile = Gio.File.new_for_path(iconPath);
       let gicon = null;
 
@@ -58,10 +71,9 @@ const CamPeekIndicator = GObject.registerClass(
         console.error(e, "CamPeek: Error loading custom icon");
       }
 
-      // Add the icon to the panel with fallback and explicit centering
       this._icon = new St.Icon({
         gicon: gicon,
-        icon_name: gicon ? null : "camera-web-symbolic", // Fallback if gicon is null
+        icon_name: gicon ? null : "camera-web-symbolic",
         style_class: "system-status-icon campeek-icon",
         icon_size: 16,
         x_expand: true,
@@ -70,47 +82,42 @@ const CamPeekIndicator = GObject.registerClass(
         y_align: Clutter.ActorAlign.CENTER,
       });
 
-      // Add the icon to the box
       topBox.add_child(this._icon);
-
-      // Use bin layout for the button to ensure centering
       this.set_layout_manager(new Clutter.BinLayout());
       this.add_style_class_name("campeek-button");
       this.add_child(topBox);
+    }
 
-      // Configure the menu
+    _setupMenu() {
       this.menu.removeAll();
 
-      // Override the default menu opening mechanism
+      // Save original menu open function to restore on cleanup
       this._originalOpenMenuFunc = this.menu.open;
       this.menu.open = (animate) => {
-        // First call the original method
         this._originalOpenMenuFunc.call(this.menu, animate);
-
-        // Schedule multiple adjustment attempts to ensure centering
         this._scheduleMenuPositionFix();
       };
 
-      // Create a menu item to contain the camera preview
+      // Create preview container
       let previewItem = new PopupMenu.PopupBaseMenuItem({
         reactive: false,
         style_class: "campeek-preview-item",
       });
       this.menu.addMenuItem(previewItem);
 
-      // Create a container for the camera preview
       this._previewContainer = new St.Widget({
         layout_manager: new Clutter.BinLayout(),
         x_expand: true,
         y_expand: true,
         width: 480,
         height: 270,
+        style_class: "campeek-preview-container",
+        style: "clip-path: inset(0px round 12px);"
       });
 
-      // Add the preview container to the menu item
       previewItem.add_child(this._previewContainer);
 
-      // Add a spinner for loading state
+      // Add loading spinner
       this._spinner = new St.Icon({
         icon_name: "content-loading-symbolic",
         style_class: "spinner",
@@ -121,22 +128,16 @@ const CamPeekIndicator = GObject.registerClass(
       });
       this._previewContainer.add_child(this._spinner);
 
-      // Setup menu arrow and alignment
+      // Setup menu arrow
       if (this.menu._boxPointer) {
         this.menu._boxPointer._arrowSide = St.Side.TOP;
         this.menu._boxPointer.setSourceAlignment(0.5);
       }
+    }
 
-      // Track timeouts
-      this._menuStyleTimeout = null;
-      this._positionFixTimeouts = [];
-      this._globalClickId = null;
-      this._buttonPressHandler = null;
-      this._outsideClickId = null;
-
-      // Add click-outside handling for the main menu
+    _setupEventHandlers() {
+      // Handle clicks outside menu area
       this.menu.actor.connect("button-press-event", (actor, event) => {
-        // If we detect a click outside the menu area
         if (event.get_source() !== actor) {
           this.menu.close();
           return Clutter.EVENT_STOP;
@@ -144,18 +145,16 @@ const CamPeekIndicator = GObject.registerClass(
         return Clutter.EVENT_PROPAGATE;
       });
 
-      // Connect to menu open-state-changed signal
+      // Handle menu open/close events
       this.menu.connect("open-state-changed", (menu, isOpen) => {
         if (isOpen) {
           this._startCameraPreview();
 
-          // Clear existing timeout before setting a new one
           if (this._menuStyleTimeout) {
             GLib.source_remove(this._menuStyleTimeout);
             this._menuStyleTimeout = null;
           }
 
-          // Apply styling to menu
           this._menuStyleTimeout = GLib.timeout_add(
             GLib.PRIORITY_DEFAULT,
             10,
@@ -166,11 +165,9 @@ const CamPeekIndicator = GObject.registerClass(
             },
           );
 
-          // Add global click handler
           this._globalClickId = global.stage.connect(
             "button-press-event",
             (actor, event) => {
-              // Close menu when clicking outside
               if (this.menu.isOpen) {
                 this.menu.close();
               }
@@ -178,11 +175,8 @@ const CamPeekIndicator = GObject.registerClass(
           );
         } else {
           this._stopCameraPreview();
-
-          // Clean up any position fix timeouts
           this._clearPositionFixTimeouts();
 
-          // Remove global click handler
           if (this._globalClickId) {
             global.stage.disconnect(this._globalClickId);
             this._globalClickId = null;
@@ -190,23 +184,21 @@ const CamPeekIndicator = GObject.registerClass(
         }
       });
 
-      // Add button-press-event handler for right-click
+      // Handle right-click for camera selection
       this._buttonPressHandler = (actor, event) => {
-        // Check if it's right button (button 3)
         if (event.get_button() === 3) {
           this._showCameraSelectionMenu();
           return Clutter.EVENT_STOP;
+        } else if (event.get_button() === 1) {
+          if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
+            this._cameraSelectionMenu.close();
+            this._cameraSelectionMenu = null;
+            this._isSelectionMenuOpen = false;
+          }
         }
         return Clutter.EVENT_PROPAGATE;
       };
       this.connect("button-press-event", this._buttonPressHandler);
-
-      this._cameraProcess = null;
-      this._refreshTimeout = null;
-      this._cameraOutput = null;
-      this._imageActor = null;
-      this._imageWrapper = null;
-      this._cameraInUseMessage = null;
     }
 
     _showCameraSelectionMenu() {
@@ -216,7 +208,13 @@ const CamPeekIndicator = GObject.registerClass(
       }
       
       // Prevent multiple menus from showing
-      if (this._isSelectionMenuOpen) {
+      if (this._isSelectionMenuOpen || this._cameraSelectionMenu) {
+        // If already open, just bring focus to it
+        if (this._cameraSelectionMenu) {
+          this._cameraSelectionMenu.close();
+          this._cameraSelectionMenu = null;
+        }
+        this._isSelectionMenuOpen = false;
         return;
       }
       
@@ -225,6 +223,7 @@ const CamPeekIndicator = GObject.registerClass(
       
       // Create a new menu for camera selection
       let cameraMenu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
+      this._cameraSelectionMenu = cameraMenu;
 
       // Add available cameras to the menu
       this._populateCameraMenu(cameraMenu);
@@ -259,13 +258,15 @@ const CamPeekIndicator = GObject.registerClass(
         if (!isOpen) {
           // Reset the flag when menu closes
           this._isSelectionMenuOpen = false;
+          // Clear the reference to the menu
+          this._cameraSelectionMenu = null;
           
           // Disconnect the global click handler when menu closes
           if (this._outsideClickId) {
             global.stage.disconnect(this._outsideClickId);
             this._outsideClickId = null;
           }
-          
+
           Main.uiGroup.remove_child(menu.actor);
           menu.destroy();
         }
@@ -319,7 +320,14 @@ const CamPeekIndicator = GObject.registerClass(
         // Open the donation URL
         let url = "https://buymeacoffee.com/gamalsherii";
         try {
-          GLib.spawn_command_line_async(`xdg-open ${url}`);
+          // Use the async version for better performance
+          Gio.AppInfo.launch_default_for_uri_async(url, null, null, (source, result) => {
+            try {
+              Gio.AppInfo.launch_default_for_uri_finish(result);
+            } catch (e) {
+              console.error(`Failed to open URL: ${e.message}`);
+            }
+          });
         } catch (e) {
           console.error("Error opening donation URL:", e);
         }
@@ -387,21 +395,16 @@ const CamPeekIndicator = GObject.registerClass(
       // Clear any existing timeouts
       this._clearPositionFixTimeouts();
 
-      // Schedule multiple position fixes at different times
-      // to ensure it works even if the menu changes size
-      [0, 50, 100, 250, 500].forEach((delay) => {
-        let id = GLib.timeout_add(GLib.PRIORITY_HIGH, delay, () => {
-          this._fixMenuPosition();
-
-          // Remove this timeout from our tracking array
-          this._positionFixTimeouts = this._positionFixTimeouts.filter(
-            (t) => t !== id,
-          );
-          return GLib.SOURCE_REMOVE;
-        });
-
-        this._positionFixTimeouts.push(id);
+      // Schedule a single position fix with a small delay
+      let id = GLib.timeout_add(GLib.PRIORITY_HIGH, 100, () => {
+        this._fixMenuPosition();
+        this._positionFixTimeouts = this._positionFixTimeouts.filter(
+          (t) => t !== id
+        );
+        return GLib.SOURCE_REMOVE;
       });
+
+      this._positionFixTimeouts.push(id);
     }
 
     _clearPositionFixTimeouts() {
@@ -464,6 +467,9 @@ const CamPeekIndicator = GObject.registerClass(
         this._cameraInUseMessage = null;
       }
 
+      // Ensure the preview container has rounded corners
+      this._previewContainer.style = "clip-path: inset(0px round 12px);";
+      
       // Skip all camera checks and directly try to start the camera
       this._actuallyStartCamera();
     }
@@ -489,6 +495,7 @@ const CamPeekIndicator = GObject.registerClass(
             width: 480,
             height: 270,
             style_class: "campeek-frame",
+            style: "clip-path: inset(0px round 12px);"
           });
           this._previewContainer.add_child(this._cameraOutput);
         }
@@ -717,7 +724,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
                 style:
                   "background-size: cover; background-position: center; background-image: url('" +
                   file.get_uri() +
-                  "');",
+                  "'); clip-path: inset(0px round 12px);",
               });
               this._cameraOutput.add_child(this._imageWrapper);
             } else {
@@ -725,7 +732,16 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
               this._imageWrapper.style =
                 "background-size: cover; background-position: center; background-image: url('" +
                 file.get_uri() +
-                "');";
+                "'); clip-path: inset(0px round 12px);";
+            }
+
+            // Ensure the container is also styled correctly
+            if (this._cameraOutput) {
+              this._cameraOutput.style = "clip-path: inset(0px round 12px);";
+            }
+            
+            if (this._previewContainer) {
+              this._previewContainer.style = "clip-path: inset(0px round 12px);";
             }
 
             this._cameraOutput.visible = true;
@@ -918,7 +934,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           content.style_class &&
           content.style_class.includes("popup-menu-content")
         ) {
-          content.style = "padding: 8px; margin: 0; border-radius: 12px;";
+          content.style = "padding: 8px; margin: 0; border-radius: 12px; overflow: hidden;";
         }
       }
     }
@@ -927,6 +943,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       // Restore original open function
       if (this._originalOpenMenuFunc) {
         this.menu.open = this._originalOpenMenuFunc;
+      }
+
+      // Clean up camera selection menu if it exists
+      if (this._cameraSelectionMenu) {
+        this._cameraSelectionMenu.close();
+        this._cameraSelectionMenu = null;
       }
 
       // Clean up menu style timeout if active
