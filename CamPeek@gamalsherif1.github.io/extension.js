@@ -22,6 +22,9 @@ const CamPeekIndicator = GObject.registerClass(
 
       this._extension = extension;
 
+      // Add a flag to track if camera selection menu is open
+      this._isSelectionMenuOpen = false;
+
       // Get settings
       this._settings = extension.getSettings();
 
@@ -81,16 +84,6 @@ const CamPeekIndicator = GObject.registerClass(
       // Override the default menu opening mechanism
       this._originalOpenMenuFunc = this.menu.open;
       this.menu.open = (animate) => {
-        // Close the camera selection menu if it's open
-        if (this._cameraSelectionMenu && this._cameraSelectionMenu.isOpen) {
-          // Disconnect the outside click handler
-          if (this._outsideClickId) {
-            global.stage.disconnect(this._outsideClickId);
-            this._outsideClickId = null;
-          }
-          this._cameraSelectionMenu.close();
-        }
-        
         // First call the original method
         this._originalOpenMenuFunc.call(this.menu, animate);
 
@@ -140,9 +133,6 @@ const CamPeekIndicator = GObject.registerClass(
       this._globalClickId = null;
       this._buttonPressHandler = null;
       this._outsideClickId = null;
-      
-      // Track camera selection menu state
-      this._cameraSelectionMenu = null;
 
       // Add click-outside handling for the main menu
       this.menu.actor.connect("button-press-event", (actor, event) => {
@@ -204,7 +194,6 @@ const CamPeekIndicator = GObject.registerClass(
       this._buttonPressHandler = (actor, event) => {
         // Check if it's right button (button 3)
         if (event.get_button() === 3) {
-          // Prevent the default behavior (which might trigger the left-click menu)
           this._showCameraSelectionMenu();
           return Clutter.EVENT_STOP;
         }
@@ -221,38 +210,57 @@ const CamPeekIndicator = GObject.registerClass(
     }
 
     _showCameraSelectionMenu() {
-      // If the camera selection menu is already open, don't create a new one
-      if (this._cameraSelectionMenu && this._cameraSelectionMenu.isOpen) {
-        return;
-      }
-      
-      // Close the preview menu if it's open to prevent both menus appearing
+      // First, close the preview menu if it's open
       if (this.menu.isOpen) {
         this.menu.close();
       }
       
+      // Prevent multiple menus from showing
+      if (this._isSelectionMenuOpen) {
+        return;
+      }
+      
+      // Set flag that menu is open
+      this._isSelectionMenuOpen = true;
+      
       // Create a new menu for camera selection
       let cameraMenu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
-      this._cameraSelectionMenu = cameraMenu;
 
       // Add available cameras to the menu
       this._populateCameraMenu(cameraMenu);
 
-      // Position the menu
+      // We need to manually position and show it
       Main.uiGroup.add_child(cameraMenu.actor);
-      cameraMenu.open(true); // true = with animation
 
-      // Add a global click handler to close the menu when clicking outside
-      this._outsideClickId = global.stage.connect('button-press-event', (actor, event) => {
-        if (this._cameraSelectionMenu && this._cameraSelectionMenu.isOpen) {
-          this._cameraSelectionMenu.close();
+      // Make the menu modal so clicking outside closes it
+      cameraMenu.actor.connect("button-press-event", (actor, event) => {
+        // Close the menu if clicked outside
+        if (event.get_source() !== actor) {
+          cameraMenu.close();
+          return Clutter.EVENT_STOP;
         }
+        return Clutter.EVENT_PROPAGATE;
       });
 
-      // Close the menu when a selection is made or closed
+      cameraMenu.open();
+
+      // Connect to global button press to close when clicking outside
+      this._outsideClickId = global.stage.connect(
+        "button-press-event",
+        (actor, event) => {
+          if (cameraMenu.isOpen) {
+            cameraMenu.close();
+          }
+        },
+      );
+
+      // Close the menu when a selection is made or clicked outside
       cameraMenu.connect("open-state-changed", (menu, isOpen) => {
         if (!isOpen) {
-          // Disconnect the outside click handler
+          // Reset the flag when menu closes
+          this._isSelectionMenuOpen = false;
+          
+          // Disconnect the global click handler when menu closes
           if (this._outsideClickId) {
             global.stage.disconnect(this._outsideClickId);
             this._outsideClickId = null;
@@ -260,16 +268,8 @@ const CamPeekIndicator = GObject.registerClass(
           
           Main.uiGroup.remove_child(menu.actor);
           menu.destroy();
-          
-          // Clear the reference
-          if (this._cameraSelectionMenu === menu) {
-            this._cameraSelectionMenu = null;
-          }
         }
       });
-      
-      // Use GNOME Shell's built-in menu management
-      Main.panel.menuManager.addMenu(cameraMenu);
     }
 
     _populateCameraMenu(menu) {
@@ -309,6 +309,22 @@ const CamPeekIndicator = GObject.registerClass(
         this._showCameraSelectionMenu();
       });
       menu.addMenuItem(refreshItem);
+
+      // Add donation button in a separate section
+      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+      let donateItem = new PopupMenu.PopupMenuItem(_("Donate ❤️"));
+      // Set red color for the donate button
+      donateItem.label.style = "color: #ff0000;";
+      donateItem.connect("activate", () => {
+        // Open the donation URL
+        let url = "https://buymeacoffee.com/gamalsherii";
+        try {
+          GLib.spawn_command_line_async(`xdg-open ${url}`);
+        } catch (e) {
+          console.error("Error opening donation URL:", e);
+        }
+      });
+      menu.addMenuItem(donateItem);
     }
 
     _findAvailableCameras() {
@@ -690,9 +706,6 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
 
           let file = Gio.File.new_for_path(newestFrame.path);
           if (file.query_exists(null)) {
-            // Create a clean URI for the file
-            let fileUri = file.get_uri();
-            
             // Using a widget with background image to ensure it fills the container
             if (!this._imageWrapper || !this._imageWrapper.get_parent()) {
               this._imageWrapper = new St.Widget({
@@ -701,23 +714,18 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
                 y_expand: true,
                 width: 480,
                 height: 270,
+                style:
+                  "background-size: cover; background-position: center; background-image: url('" +
+                  file.get_uri() +
+                  "');",
               });
-              
-              // Set background properties individually to avoid parsing issues
-              this._imageWrapper.set_style(
-                "background-size: cover;" + 
-                "background-position: center;" + 
-                "background-image: url('" + fileUri + "');"
-              );
-              
               this._cameraOutput.add_child(this._imageWrapper);
             } else {
-              // Update background image with clean styling
-              this._imageWrapper.set_style(
-                "background-size: cover;" + 
-                "background-position: center;" + 
-                "background-image: url('" + fileUri + "');"
-              );
+              // Just update the background image
+              this._imageWrapper.style =
+                "background-size: cover; background-position: center; background-image: url('" +
+                file.get_uri() +
+                "');";
             }
 
             this._cameraOutput.visible = true;
@@ -900,8 +908,8 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
     _removeAllPadding() {
       // Now implemented to properly adjust the styling
       if (this.menu.box) {
-        // Apply styles using the proper set_style method
-        this.menu.box.set_style("padding: 0; margin: 0;");
+        // Apply styles directly to improve compatibility
+        this.menu.box.style = "padding: 0; margin: 0;";
 
         // Find and style the popup-menu-content
         let content = this.menu.box.get_parent();
@@ -910,7 +918,7 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           content.style_class &&
           content.style_class.includes("popup-menu-content")
         ) {
-          content.set_style("padding: 8px; margin: 0; border-radius: 12px;");
+          content.style = "padding: 8px; margin: 0; border-radius: 12px;";
         }
       }
     }
