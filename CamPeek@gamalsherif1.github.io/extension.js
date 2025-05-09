@@ -225,8 +225,10 @@ const CamPeekIndicator = GObject.registerClass(
       let cameraMenu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
       this._cameraSelectionMenu = cameraMenu;
 
-      // Add available cameras to the menu
-      this._populateCameraMenu(cameraMenu);
+      // Initially add a "loading" item
+      let loadingItem = new PopupMenu.PopupMenuItem(_("Loading cameras..."));
+      loadingItem.setSensitive(false);
+      cameraMenu.addMenuItem(loadingItem);
 
       // We need to manually position and show it
       Main.uiGroup.add_child(cameraMenu.actor);
@@ -271,68 +273,19 @@ const CamPeekIndicator = GObject.registerClass(
           menu.destroy();
         }
       });
+
+      // Get initial list of cameras (first just showing current)
+      let initialCameras = this._findAvailableCameras();
+      this._rebuildCameraMenu(initialCameras);
+      
+      // Trigger async detection to update the menu
+      this._detectCamerasAsync();
     }
 
     _populateCameraMenu(menu) {
-      // Add a title item
-      let titleItem = new PopupMenu.PopupMenuItem(_("Select Camera Device"));
-      titleItem.setSensitive(false);
-      menu.addMenuItem(titleItem);
-
-      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-
-      // Find available cameras
-      let cameras = this._findAvailableCameras();
-
-      // Add each camera to the menu
-      let activeCamera = this._cameraDevice;
-      cameras.forEach((camera) => {
-        let isActive = camera.device === activeCamera;
-        let item = new PopupMenu.PopupMenuItem(camera.label);
-
-        // Mark the current active camera
-        if (isActive) {
-          item.setOrnament(PopupMenu.Ornament.DOT);
-        }
-
-        item.connect("activate", () => {
-          this._selectCamera(camera.device);
-        });
-
-        menu.addMenuItem(item);
-      });
-
-      // Add a refresh option at the bottom
-      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-      let refreshItem = new PopupMenu.PopupMenuItem(_("Refresh Camera List"));
-      refreshItem.connect("activate", () => {
-        menu.close();
-        this._showCameraSelectionMenu();
-      });
-      menu.addMenuItem(refreshItem);
-
-      // Add donation button in a separate section
-      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-      let donateItem = new PopupMenu.PopupMenuItem(_("Support ❤️"));
-      // Set red color for the donate button
-      donateItem.label.style = "color: #ff0000;";
-      donateItem.connect("activate", () => {
-        // Open the donation URL
-        let url = "https://buymeacoffee.com/gamalsherii";
-        try {
-          // Use the async version for better performance
-          Gio.AppInfo.launch_default_for_uri_async(url, null, null, (source, result) => {
-            try {
-              Gio.AppInfo.launch_default_for_uri_finish(result);
-            } catch (e) {
-              console.error(`Failed to open URL: ${e.message}`);
-            }
-          });
-        } catch (e) {
-          console.error("Error opening donation URL:", e);
-        }
-      });
-      menu.addMenuItem(donateItem);
+      // This function is no longer needed as we're using _rebuildCameraMenu
+      // Keep it as a no-op for compatibility
+      console.log("CamPeek: _populateCameraMenu is deprecated, using _rebuildCameraMenu instead");
     }
 
     _findAvailableCameras() {
@@ -340,60 +293,209 @@ const CamPeekIndicator = GObject.registerClass(
       console.log("CamPeek: Starting camera detection");
 
       try {
-        // Execute the command directly with bash to avoid any environment issues
-        let command = '/bin/bash -c "ls -1 /dev/video* 2>/dev/null || echo none"';
-        console.log("CamPeek: Running command:", command);
+        // Use a default camera while we're loading the list asynchronously
+        cameras.push({
+          device: this._cameraDevice || "/dev/video0",
+          label: `Current Camera (${this._cameraDevice || "/dev/video0"})`,
+        });
         
-        let [success, stdout, stderr] = GLib.spawn_command_line_sync(command);
+        // Start the async camera detection
+        this._detectCamerasAsync();
         
-        if (success) {
-          let deviceOutput = new TextDecoder().decode(stdout).trim();
-          console.log("CamPeek: Raw device output:", deviceOutput);
-          
-          // If we got a real result (not just "none")
-          if (deviceOutput && deviceOutput !== "none") {
-            // Split on newlines and filter out any empty lines
-            let deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
-            console.log("CamPeek: Found", deviceList.length, "video devices");
-            
-            // Create camera objects for each device
-            deviceList.forEach((device, index) => {
-              let devicePath = device.trim();
-              
-              // Basic friendly name
-              let friendlyName = `Camera ${index}`;
-              
-              // Add to our list
-              cameras.push({
-                device: devicePath,
-                label: `${friendlyName} (${devicePath})`,
-              });
-              
-              console.log(`CamPeek: Added camera: ${friendlyName} (${devicePath})`);
-            });
-          } else {
-            console.log("CamPeek: No video devices found in /dev/video*");
-          }
-        } else {
-          console.error("CamPeek: Command failed:", stderr);
-        }
+        console.log("CamPeek: Returning initial camera list while detection runs in background");
       } catch (e) {
         console.error("CamPeek: Error finding cameras:", e);
-      }
-
-      // If no cameras found, add a placeholder
-      if (cameras.length === 0) {
-        console.log("CamPeek: No cameras detected, adding default placeholder");
-        cameras.push({
-          device: "/dev/video0",
-          label: "Default Camera (/dev/video0)",
-        });
-      } else {
-        console.log("CamPeek: Successfully found", cameras.length, "cameras:",
-          cameras.map(c => c.label).join(", "));
+        
+        // Add a default camera if none found
+        if (cameras.length === 0) {
+          console.log("CamPeek: Adding default placeholder");
+          cameras.push({
+            device: "/dev/video0",
+            label: "Default Camera (/dev/video0)",
+          });
+        }
       }
 
       return cameras;
+    }
+    
+    _detectCamerasAsync() {
+      // Cancel any existing detection
+      if (this._cameraDetectionProcess) {
+        try {
+          this._cameraDetectionProcess.force_exit();
+        } catch (e) {
+          console.error("CamPeek: Error cancelling previous detection:", e);
+        }
+        this._cameraDetectionProcess = null;
+      }
+      
+      try {
+        // Execute the command asynchronously
+        let command = ['bash', '-c', 'ls -1 /dev/video* 2>/dev/null || echo none'];
+        console.log("CamPeek: Running async command:", command.join(' '));
+        
+        this._cameraDetectionProcess = Gio.Subprocess.new(
+          command,
+          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+        );
+        
+        // Communicate with the subprocess asynchronously
+        this._cameraDetectionProcess.communicate_utf8_async(null, null, (proc, result) => {
+          try {
+            let [, stdout, stderr] = proc.communicate_utf8_finish(result);
+            
+            if (proc.get_successful()) {
+              console.log("CamPeek: Raw device output:", stdout);
+              
+              // If we have an open camera selection menu, update it
+              if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
+                this._updateCameraSelectionMenu(stdout);
+              }
+            } else {
+              console.error("CamPeek: Command failed:", stderr);
+            }
+          } catch (e) {
+            console.error("CamPeek: Error processing camera detection results:", e);
+          } finally {
+            this._cameraDetectionProcess = null;
+          }
+        });
+      } catch (e) {
+        console.error("CamPeek: Error starting async camera detection:", e);
+      }
+    }
+    
+    _updateCameraSelectionMenu(deviceOutput) {
+      // Don't update if menu is closed
+      if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
+        return;
+      }
+      
+      try {
+        let cameras = [];
+        
+        // If we got a real result (not just "none")
+        if (deviceOutput && deviceOutput !== "none") {
+          // Split on newlines and filter out any empty lines
+          let deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
+          console.log("CamPeek: Found", deviceList.length, "video devices");
+          
+          // Create camera objects for each device
+          deviceList.forEach((device, index) => {
+            let devicePath = device.trim();
+            
+            // Basic friendly name
+            let friendlyName = `Camera ${index}`;
+            
+            // Add to our list
+            cameras.push({
+              device: devicePath,
+              label: `${friendlyName} (${devicePath})`,
+            });
+            
+            console.log(`CamPeek: Added camera: ${friendlyName} (${devicePath})`);
+          });
+        } else {
+          console.log("CamPeek: No video devices found in /dev/video*");
+        }
+        
+        // If no cameras found, add a placeholder
+        if (cameras.length === 0) {
+          console.log("CamPeek: No cameras detected, adding default placeholder");
+          cameras.push({
+            device: "/dev/video0",
+            label: "Default Camera (/dev/video0)",
+          });
+        }
+        
+        // Rebuild menu with the new camera list
+        this._rebuildCameraMenu(cameras);
+      } catch (e) {
+        console.error("CamPeek: Error updating camera menu:", e);
+      }
+    }
+    
+    _rebuildCameraMenu(cameras) {
+      // Don't update if menu is closed
+      if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
+        return;
+      }
+      
+      try {
+        // Remove all existing menu items
+        this._cameraSelectionMenu.removeAll();
+        
+        // Add a title item
+        let titleItem = new PopupMenu.PopupMenuItem(_("Select Camera Device"));
+        titleItem.setSensitive(false);
+        this._cameraSelectionMenu.addMenuItem(titleItem);
+        
+        this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        
+        // Add each camera to the menu
+        let activeCamera = this._cameraDevice;
+        cameras.forEach((camera) => {
+          let isActive = camera.device === activeCamera;
+          let item = new PopupMenu.PopupMenuItem(camera.label);
+          
+          // Mark the current active camera
+          if (isActive) {
+            item.setOrnament(PopupMenu.Ornament.DOT);
+          }
+          
+          item.connect("activate", () => {
+            this._selectCamera(camera.device);
+          });
+          
+          this._cameraSelectionMenu.addMenuItem(item);
+        });
+        
+        // Add a refresh option at the bottom
+        this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        let refreshItem = new PopupMenu.PopupMenuItem(_("Refresh Camera List"));
+        refreshItem.connect("activate", () => {
+          // Show a loading indicator
+          refreshItem.label.text = _("Refreshing...");
+          
+          // Start async detection
+          this._detectCamerasAsync();
+          
+          // Reset text after a short delay
+          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+            if (refreshItem && refreshItem.label) {
+              refreshItem.label.text = _("Refresh Camera List");
+            }
+            return GLib.SOURCE_REMOVE;
+          });
+        });
+        this._cameraSelectionMenu.addMenuItem(refreshItem);
+        
+        // Add donation button in a separate section
+        this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        let donateItem = new PopupMenu.PopupMenuItem(_("Support ❤️"));
+        // Set red color for the donate button
+        donateItem.label.style = "color: #ff0000;";
+        donateItem.connect("activate", () => {
+          // Open the donation URL
+          let url = "https://buymeacoffee.com/gamalsherii";
+          try {
+            // Use the async version for better performance
+            Gio.AppInfo.launch_default_for_uri_async(url, null, null, (source, result) => {
+              try {
+                Gio.AppInfo.launch_default_for_uri_finish(result);
+              } catch (e) {
+                console.error(`Failed to open URL: ${e.message}`);
+              }
+            });
+          } catch (e) {
+            console.error("Error opening donation URL:", e);
+          }
+        });
+        this._cameraSelectionMenu.addMenuItem(donateItem);
+      } catch (e) {
+        console.error("CamPeek: Error rebuilding camera menu:", e);
+      }
     }
 
     _selectCamera(device) {
@@ -959,6 +1061,16 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       // Restore original open function
       if (this._originalOpenMenuFunc) {
         this.menu.open = this._originalOpenMenuFunc;
+      }
+
+      // Cancel any running async camera detection
+      if (this._cameraDetectionProcess) {
+        try {
+          this._cameraDetectionProcess.force_exit();
+        } catch (e) {
+          console.error("CamPeek: Error cancelling camera detection:", e);
+        }
+        this._cameraDetectionProcess = null;
       }
 
       // Clean up camera selection menu if it exists
