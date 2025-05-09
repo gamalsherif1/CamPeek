@@ -47,6 +47,7 @@ const CamPeekIndicator = GObject.registerClass(
       this._globalClickId = null;
       this._buttonPressHandler = null;
       this._outsideClickId = null;
+      this._refreshListLabelTimeout = null;
     }
 
     _setupUI() {
@@ -462,10 +463,14 @@ const CamPeekIndicator = GObject.registerClass(
           this._detectCamerasAsync();
           
           // Reset text after a short delay
-          GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
+          if (this._refreshListLabelTimeout) {
+            GLib.source_remove(this._refreshListLabelTimeout);
+          }
+          this._refreshListLabelTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
             if (refreshItem && refreshItem.label) {
               refreshItem.label.text = _("Refresh Camera List");
             }
+            this._refreshListLabelTimeout = 0;
             return GLib.SOURCE_REMOVE;
           });
         });
@@ -1077,6 +1082,12 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       if (this._cameraSelectionMenu) {
         this._cameraSelectionMenu.close();
         this._cameraSelectionMenu = null;
+      }
+
+      // Clean up refresh list label timeout if active
+      if (this._refreshListLabelTimeout) {
+        GLib.source_remove(this._refreshListLabelTimeout);
+        this._refreshListLabelTimeout = null;
       }
 
       // Clean up menu style timeout if active
