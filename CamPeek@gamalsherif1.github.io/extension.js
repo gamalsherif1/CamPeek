@@ -313,7 +313,7 @@ const CamPeekIndicator = GObject.registerClass(
 
       // Add donation button in a separate section
       menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-      let donateItem = new PopupMenu.PopupMenuItem(_("Donate ❤️"));
+      let donateItem = new PopupMenu.PopupMenuItem(_("Support ❤️"));
       // Set red color for the donate button
       donateItem.label.style = "color: #ff0000;";
       donateItem.connect("activate", () => {
@@ -337,41 +337,60 @@ const CamPeekIndicator = GObject.registerClass(
 
     _findAvailableCameras() {
       let cameras = [];
+      console.log("CamPeek: Starting camera detection");
 
       try {
-        // Use GLib to execute a shell command to find cameras
-        let [success, stdout, stderr] =
-          GLib.spawn_command_line_sync("ls -1 /dev/video*");
-
+        // Execute the command directly with bash to avoid any environment issues
+        let command = '/bin/bash -c "ls -1 /dev/video* 2>/dev/null || echo none"';
+        console.log("CamPeek: Running command:", command);
+        
+        let [success, stdout, stderr] = GLib.spawn_command_line_sync(command);
+        
         if (success) {
-          // Convert the output to a string
           let deviceOutput = new TextDecoder().decode(stdout).trim();
-          let devices = deviceOutput.split("\n");
-
-          // Add each found device
-          devices.forEach((device, index) => {
-            if (device) {
-              // Try to get a friendly name (this is basic - could be enhanced)
+          console.log("CamPeek: Raw device output:", deviceOutput);
+          
+          // If we got a real result (not just "none")
+          if (deviceOutput && deviceOutput !== "none") {
+            // Split on newlines and filter out any empty lines
+            let deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
+            console.log("CamPeek: Found", deviceList.length, "video devices");
+            
+            // Create camera objects for each device
+            deviceList.forEach((device, index) => {
+              let devicePath = device.trim();
+              
+              // Basic friendly name
               let friendlyName = `Camera ${index}`;
-
+              
               // Add to our list
               cameras.push({
-                device: device,
-                label: `${friendlyName} (${device})`,
+                device: devicePath,
+                label: `${friendlyName} (${devicePath})`,
               });
-            }
-          });
+              
+              console.log(`CamPeek: Added camera: ${friendlyName} (${devicePath})`);
+            });
+          } else {
+            console.log("CamPeek: No video devices found in /dev/video*");
+          }
+        } else {
+          console.error("CamPeek: Command failed:", stderr);
         }
       } catch (e) {
-        console.error("Error finding cameras:", e);
+        console.error("CamPeek: Error finding cameras:", e);
       }
 
       // If no cameras found, add a placeholder
       if (cameras.length === 0) {
+        console.log("CamPeek: No cameras detected, adding default placeholder");
         cameras.push({
           device: "/dev/video0",
           label: "Default Camera (/dev/video0)",
         });
+      } else {
+        console.log("CamPeek: Successfully found", cameras.length, "cameras:",
+          cameras.map(c => c.label).join(", "));
       }
 
       return cameras;
@@ -443,14 +462,11 @@ const CamPeekIndicator = GObject.registerClass(
         // Set menu position
         menuActor.set_position(targetX, menuActor.get_y());
 
-        // Also try to adjust the arrow position
-        if (this.menu._boxPointer && this.menu._boxPointer._arrowOrigin) {
-          this.menu._boxPointer._arrowOrigin.set_x_align(
-            Clutter.ActorAlign.CENTER,
-          );
-        }
+        // Avoid trying to set arrow position directly as it's causing errors
+        // Just log a message instead
+        console.log("CamPeek: Menu position updated");
       } catch (e) {
-        console.error("Error fixing menu position:", e);
+        console.error("CamPeek: Error fixing menu position:", e);
       }
     }
 
