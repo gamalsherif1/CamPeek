@@ -67,7 +67,7 @@ Found a bug or have an idea? Open an issue or submit a PR.
 
 ## 📄 License
 
-🧾 GPL-2.0-or-later
+🧾 MIT License
 
 ---
 
