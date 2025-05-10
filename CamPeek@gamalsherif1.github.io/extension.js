@@ -48,6 +48,9 @@ const CamPeekIndicator = GObject.registerClass(
       this._buttonPressHandler = null;
       this._outsideClickId = null;
       this._refreshListLabelTimeout = null;
+      // Add for camera menu timeouts
+      this._cameraMenuTimeoutId1 = null;
+      this._cameraMenuTimeoutId2 = null;
     }
 
     _setupUI() {
@@ -188,14 +191,18 @@ const CamPeekIndicator = GObject.registerClass(
       // Handle right-click for camera selection
       this._buttonPressHandler = (actor, event) => {
         if (event.get_button() === 3) {
+          // Right click - show camera selection menu and prevent preview menu from opening
           this._showCameraSelectionMenu();
           return Clutter.EVENT_STOP;
         } else if (event.get_button() === 1) {
+          // Left click - handle normal menu behavior
           if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
             this._cameraSelectionMenu.close();
             this._cameraSelectionMenu = null;
             this._isSelectionMenuOpen = false;
           }
+          // Let the default menu open behavior continue
+          return Clutter.EVENT_PROPAGATE;
         }
         return Clutter.EVENT_PROPAGATE;
       };
@@ -203,7 +210,7 @@ const CamPeekIndicator = GObject.registerClass(
     }
 
     _showCameraSelectionMenu() {
-      // First, close the preview menu if it's open
+      // First, ensure the preview menu is closed
       if (this.menu.isOpen) {
         this.menu.close();
       }
@@ -226,10 +233,13 @@ const CamPeekIndicator = GObject.registerClass(
       let cameraMenu = new PopupMenu.PopupMenu(this, 0.5, St.Side.TOP);
       this._cameraSelectionMenu = cameraMenu;
 
-      // Initially add a "loading" item
-      let loadingItem = new PopupMenu.PopupMenuItem(_("Loading cameras..."));
-      loadingItem.setSensitive(false);
-      cameraMenu.addMenuItem(loadingItem);
+      // Add a loading item (only, no current camera placeholder)
+      this._loadingMenuItem = new PopupMenu.PopupMenuItem(_("Loading cameras..."));
+      this._loadingMenuItem.setSensitive(false);
+      cameraMenu.addMenuItem(this._loadingMenuItem);
+
+      // Record the loading start time
+      this._cameraLoadingStartTime = Date.now();
 
       // We need to manually position and show it
       Main.uiGroup.add_child(cameraMenu.actor);
@@ -263,22 +273,17 @@ const CamPeekIndicator = GObject.registerClass(
           this._isSelectionMenuOpen = false;
           // Clear the reference to the menu
           this._cameraSelectionMenu = null;
-          
+          this._loadingMenuItem = null;
           // Disconnect the global click handler when menu closes
           if (this._outsideClickId) {
             global.stage.disconnect(this._outsideClickId);
             this._outsideClickId = null;
           }
-
           Main.uiGroup.remove_child(menu.actor);
           menu.destroy();
         }
       });
 
-      // Get initial list of cameras (first just showing current)
-      let initialCameras = this._findAvailableCameras();
-      this._rebuildCameraMenu(initialCameras);
-      
       // Trigger async detection to update the menu
       this._detectCamerasAsync();
     }
@@ -290,34 +295,8 @@ const CamPeekIndicator = GObject.registerClass(
     }
 
     _findAvailableCameras() {
-      let cameras = [];
-      console.log("CamPeek: Starting camera detection");
-
-      try {
-        // Use a default camera while we're loading the list asynchronously
-        cameras.push({
-          device: this._cameraDevice || "/dev/video0",
-          label: `Current Camera (${this._cameraDevice || "/dev/video0"})`,
-        });
-        
-        // Start the async camera detection
-        this._detectCamerasAsync();
-        
-        console.log("CamPeek: Returning initial camera list while detection runs in background");
-      } catch (e) {
-        console.error("CamPeek: Error finding cameras:", e);
-        
-        // Add a default camera if none found
-        if (cameras.length === 0) {
-          console.log("CamPeek: Adding default placeholder");
-          cameras.push({
-            device: "/dev/video0",
-            label: "Default Camera (/dev/video0)",
-          });
-        }
-      }
-
-      return cameras;
+      // No longer return a placeholder, just return an empty array
+      return [];
     }
     
     _detectCamerasAsync() {
@@ -372,46 +351,59 @@ const CamPeekIndicator = GObject.registerClass(
       if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
         return;
       }
-      
       try {
         let cameras = [];
-        
-        // If we got a real result (not just "none")
         if (deviceOutput && deviceOutput !== "none") {
-          // Split on newlines and filter out any empty lines
           let deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
-          console.log("CamPeek: Found", deviceList.length, "video devices");
-          
-          // Create camera objects for each device
           deviceList.forEach((device, index) => {
             let devicePath = device.trim();
-            
-            // Basic friendly name
             let friendlyName = `Camera ${index}`;
-            
-            // Add to our list
             cameras.push({
               device: devicePath,
               label: `${friendlyName} (${devicePath})`,
             });
-            
-            console.log(`CamPeek: Added camera: ${friendlyName} (${devicePath})`);
           });
-        } else {
-          console.log("CamPeek: No video devices found in /dev/video*");
         }
-        
-        // If no cameras found, add a placeholder
+        // If no cameras found, show a disabled item
         if (cameras.length === 0) {
-          console.log("CamPeek: No cameras detected, adding default placeholder");
-          cameras.push({
-            device: "/dev/video0",
-            label: "Default Camera (/dev/video0)",
-          });
+          // Remove all items and show only 'No cameras found'
+          const finish = () => {
+            this._cameraSelectionMenu.removeAll();
+            let noCamerasItem = new PopupMenu.PopupMenuItem(_("No cameras found"));
+            noCamerasItem.setSensitive(false);
+            this._cameraSelectionMenu.addMenuItem(noCamerasItem);
+            // Add refresh and donate as usual
+            this._rebuildCameraMenu([]); // Will add refresh/donate
+          };
+          // Ensure minimum loading time
+          let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
+          let minDuration = 100;
+          if (elapsed < minDuration) {
+            // Store timeout ID for cleanup
+            if (this._cameraMenuTimeoutId1) {
+              GLib.source_remove(this._cameraMenuTimeoutId1);
+              this._cameraMenuTimeoutId1 = null;
+            }
+            this._cameraMenuTimeoutId1 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId1 = null; return GLib.SOURCE_REMOVE; });
+          } else {
+            finish();
+          }
+          return;
         }
-        
-        // Rebuild menu with the new camera list
-        this._rebuildCameraMenu(cameras);
+        // Otherwise, rebuild menu with real cameras
+        const finish = () => { this._rebuildCameraMenu(cameras); };
+        let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
+        let minDuration = 400;
+        if (elapsed < minDuration) {
+          // Store timeout ID for cleanup
+          if (this._cameraMenuTimeoutId2) {
+            GLib.source_remove(this._cameraMenuTimeoutId2);
+            this._cameraMenuTimeoutId2 = null;
+          }
+          this._cameraMenuTimeoutId2 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId2 = null; return GLib.SOURCE_REMOVE; });
+        } else {
+          finish();
+        }
       } catch (e) {
         console.error("CamPeek: Error updating camera menu:", e);
       }
@@ -422,70 +414,49 @@ const CamPeekIndicator = GObject.registerClass(
       if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
         return;
       }
-      
       try {
-        // Remove all existing menu items
+        // Remove all items first
         this._cameraSelectionMenu.removeAll();
-        
         // Add a title item
         let titleItem = new PopupMenu.PopupMenuItem(_("Select Camera Device"));
         titleItem.setSensitive(false);
         this._cameraSelectionMenu.addMenuItem(titleItem);
-        
         this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        
         // Add each camera to the menu
         let activeCamera = this._cameraDevice;
         cameras.forEach((camera) => {
           let isActive = camera.device === activeCamera;
           let item = new PopupMenu.PopupMenuItem(camera.label);
-          
-          // Mark the current active camera
           if (isActive) {
             item.setOrnament(PopupMenu.Ornament.DOT);
           }
-          
           item.connect("activate", () => {
             this._selectCamera(camera.device);
           });
-          
           this._cameraSelectionMenu.addMenuItem(item);
         });
-        
         // Add a refresh option at the bottom
         this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         let refreshItem = new PopupMenu.PopupMenuItem(_("Refresh Camera List"));
         refreshItem.connect("activate", () => {
-          // Show a loading indicator
           refreshItem.label.text = _("Refreshing...");
-          
-          // Start async detection
+          // Remove all and show loading
+          this._cameraSelectionMenu.removeAll();
+          let loadingItem = new PopupMenu.PopupMenuItem(_("Loading cameras..."));
+          loadingItem.setSensitive(false);
+          this._cameraSelectionMenu.addMenuItem(loadingItem);
+          // Record the loading start time for refresh
+          this._cameraLoadingStartTime = Date.now();
           this._detectCamerasAsync();
-          
-          // Reset text after a short delay
-          if (this._refreshListLabelTimeout) {
-            GLib.source_remove(this._refreshListLabelTimeout);
-          }
-          this._refreshListLabelTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1000, () => {
-            if (refreshItem && refreshItem.label) {
-              refreshItem.label.text = _("Refresh Camera List");
-            }
-            this._refreshListLabelTimeout = 0;
-            return GLib.SOURCE_REMOVE;
-          });
         });
         this._cameraSelectionMenu.addMenuItem(refreshItem);
-        
         // Add donation button in a separate section
         this._cameraSelectionMenu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         let donateItem = new PopupMenu.PopupMenuItem(_("Support ❤️"));
-        // Set red color for the donate button
         donateItem.label.style = "color: #ff0000;";
         donateItem.connect("activate", () => {
-          // Open the donation URL
           let url = "https://buymeacoffee.com/gamalsherii";
           try {
-            // Use the async version for better performance
             Gio.AppInfo.launch_default_for_uri_async(url, null, null, (source, result) => {
               try {
                 Gio.AppInfo.launch_default_for_uri_finish(result);
@@ -1088,6 +1059,16 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       if (this._refreshListLabelTimeout) {
         GLib.source_remove(this._refreshListLabelTimeout);
         this._refreshListLabelTimeout = null;
+      }
+
+      // Clean up camera menu timeouts if active
+      if (this._cameraMenuTimeoutId1) {
+        GLib.source_remove(this._cameraMenuTimeoutId1);
+        this._cameraMenuTimeoutId1 = null;
+      }
+      if (this._cameraMenuTimeoutId2) {
+        GLib.source_remove(this._cameraMenuTimeoutId2);
+        this._cameraMenuTimeoutId2 = null;
       }
 
       // Clean up menu style timeout if active
