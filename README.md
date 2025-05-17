@@ -5,7 +5,7 @@
 </p>
 
 🪞 **CamPeek** — Instant webcam preview for GNOME Shell (Linux alternative to macOS's Hand Mirror)  
-> ✅ New: GNOME Shell support extended — now compatible with versions 46 to 48.
+> ✅ New: CamPeek now supports GNOME Shell versions 46, 47, and 48.
 
 ---
 
