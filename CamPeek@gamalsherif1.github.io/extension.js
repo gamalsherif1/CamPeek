@@ -54,14 +54,6 @@ const CamPeekIndicator = GObject.registerClass(
     }
 
     _setupUI() {
-      let topBox = new St.BoxLayout({
-        style_class: "panel-status-menu-box campeek-box",
-        x_expand: true,
-        y_expand: true,
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
-
       // Load icon
       let iconPath = this._extension.path + "/icons/mirror.png";
       let iconFile = Gio.File.new_for_path(iconPath);
@@ -79,17 +71,8 @@ const CamPeekIndicator = GObject.registerClass(
         gicon: gicon,
         icon_name: gicon ? null : "camera-web-symbolic",
         style_class: "system-status-icon campeek-icon",
-        icon_size: 16,
-        x_expand: true,
-        y_expand: true,
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
       });
-
-      topBox.add_child(this._icon);
-      this.set_layout_manager(new Clutter.BinLayout());
-      this.add_style_class_name("campeek-button");
-      this.add_child(topBox);
+      this.add_child(this._icon)
     }
 
     _setupMenu() {
