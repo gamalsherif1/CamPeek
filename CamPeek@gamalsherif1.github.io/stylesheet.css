@@ -51,7 +51,6 @@
 
 /* Style the indicator icon in the top panel */
 .system-status-icon.campeek-icon {
-    icon-size: 16px;
     padding: 0;
     margin: 0 auto !important;
 }
