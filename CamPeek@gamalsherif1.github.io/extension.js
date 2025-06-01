@@ -30,15 +30,14 @@ const CamPeekIndicator = GObject.registerClass(
         this._cameraDevice = "/dev/video0";
       }
 
-      // Set up UI
-      this._setupUI();
-      this._setupMenu();
-      this._setupEventHandlers();
-
-      // Initialize state variables
+      // Initialize variables for camera management
       this._cameraProcess = null;
-      this._refreshTimeout = null;
-      this._cameraOutput = null;
+      this._refreshTimeout = 0;
+      this._startTimeout = 0;
+      this._retryTimeout = null;
+      this._tempDir = null;
+      this._framesDir = null;
+      this._lastProcessedFrame = -1;
       this._imageActor = null;
       this._imageWrapper = null;
       this._cameraInUseMessage = null;
@@ -79,7 +78,6 @@ const CamPeekIndicator = GObject.registerClass(
         gicon: gicon,
         icon_name: gicon ? null : "camera-web-symbolic",
         style_class: "system-status-icon campeek-icon",
-        icon_size: 16,
         x_expand: true,
         y_expand: true,
         x_align: Clutter.ActorAlign.CENTER,
@@ -311,41 +309,252 @@ const CamPeekIndicator = GObject.registerClass(
       }
       
       try {
-        // Execute the command asynchronously
-        let command = ['bash', '-c', 'ls -1 /dev/video* 2>/dev/null || echo none'];
-        console.log("CamPeek: Running async command:", command.join(' '));
+        // Record the loading start time
+        this._cameraLoadingStartTime = Date.now();
         
-        this._cameraDetectionProcess = Gio.Subprocess.new(
-          command,
-          Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
-        );
+        // Use optimized detection methods with broader device range
+        let commands = [
+          // Primary method: list video devices (expanded range)
+          'ls -1 /dev/video* 2>/dev/null | head -20',
+          // Alternative method: use v4l2-ctl if available (expanded range)
+          'v4l2-ctl --list-devices 2>/dev/null | grep -E "^/dev/video" | head -20',
+          // Fallback: check common camera device paths (expanded range)
+          'for i in {0..19}; do [ -e "/dev/video$i" ] && echo "/dev/video$i"; done'
+        ];
         
-        // Communicate with the subprocess asynchronously
-        this._cameraDetectionProcess.communicate_utf8_async(null, null, (proc, result) => {
-          try {
-            let [, stdout, stderr] = proc.communicate_utf8_finish(result);
-            
-            if (proc.get_successful()) {
-              console.log("CamPeek: Raw device output:", stdout);
-              
-              // If we have an open camera selection menu, update it
-              if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
-                this._updateCameraSelectionMenu(stdout);
-              }
-            } else {
-              console.error("CamPeek: Command failed:", stderr);
-            }
-          } catch (e) {
-            console.error("CamPeek: Error processing camera detection results:", e);
-          } finally {
-            this._cameraDetectionProcess = null;
-          }
-        });
+        this._tryAsyncDetectionMethod(commands, 0);
       } catch (e) {
         console.error("CamPeek: Error starting async camera detection:", e);
+        // If we have an open camera selection menu, update it with no cameras
+        if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
+          this._updateCameraSelectionMenu("");
+        }
       }
     }
     
+    _tryAsyncDetectionMethod(commands, index) {
+      if (index >= commands.length) {
+        // All methods failed, check for fallback devices
+        this._asyncFallbackDetection();
+        return;
+      }
+      
+      const command = commands[index];
+      console.log("CamPeek: Trying detection method " + (index + 1) + ": " + command);
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        if (success && stdout && stdout.trim() !== "") {
+          let devices = stdout.split("\n").filter(d => d && d.trim() !== "" && d.startsWith("/dev/video"));
+          
+          if (devices.length > 0) {
+            console.log("CamPeek: Found " + devices.length + " potential camera device(s) using method " + (index + 1));
+            this._testAllCameras(devices);
+            return;
+          }
+        }
+        
+        // This method didn't work, try the next one
+        this._tryAsyncDetectionMethod(commands, index + 1);
+      }, {
+        timeout: 3000,
+        description: "detection method " + (index + 1)
+      });
+    }
+    
+    _asyncFallbackDetection() {
+      console.log("CamPeek: Async detection - checking fallback devices...");
+      
+      // Check expanded range of camera device paths for better compatibility
+      let commonPaths = [
+        '/dev/video0', '/dev/video1', '/dev/video2', '/dev/video3', '/dev/video4',
+        '/dev/video5', '/dev/video6', '/dev/video7', '/dev/video8', '/dev/video9',
+        '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14',
+        '/dev/video15', '/dev/video16', '/dev/video17', '/dev/video18', '/dev/video19'
+      ];
+      let foundDevices = [];
+      
+      for (let path of commonPaths) {
+        let deviceFile = Gio.File.new_for_path(path);
+        if (deviceFile.query_exists(null)) {
+          foundDevices.push(path);
+        }
+      }
+      
+      if (foundDevices.length > 0) {
+        console.log("CamPeek: Found " + foundDevices.length + " device(s) in async fallback check");
+        let deviceOutput = foundDevices.join("\n");
+        this._testAllCameras(foundDevices);
+      } else {
+        console.log("CamPeek: No camera devices found in async detection");
+        // If we have an open camera selection menu, update it with no cameras
+        if (this._cameraSelectionMenu && this._isSelectionMenuOpen) {
+          this._updateCameraSelectionMenu("");
+        }
+      }
+    }
+
+    _testAndFilterCameras(deviceOutput) {
+      // Don't process if menu is closed
+      if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
+        return;
+      }
+
+      // If no devices found, update with empty list
+      if (!deviceOutput || deviceOutput === "none") {
+        this._updateCameraSelectionMenu("");
+        return;
+      }
+
+      // Parse the device list
+      const deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
+      if (deviceList.length === 0) {
+        this._updateCameraSelectionMenu("");
+        return;
+      }
+
+      // Show a testing message in the menu
+      if (this._cameraSelectionMenu) {
+        this._cameraSelectionMenu.removeAll();
+        let testingItem = new PopupMenu.PopupMenuItem(_("Testing cameras..."));
+        testingItem.setSensitive(false);
+        this._cameraSelectionMenu.addMenuItem(testingItem);
+      }
+
+      // Set up variables for tracking tested devices
+      this._testedDevices = [];
+      this._workingDevices = "";
+      this._pendingDevices = deviceList.length;
+      
+      // Test each device one by one
+      deviceList.forEach((device) => {
+        this._testCameraQuick(device.trim(), (works) => {
+          this._testedDevices.push(device.trim());
+          this._pendingDevices--;
+          
+          if (works) {
+            this._workingDevices += device.trim() + "\n";
+          }
+          
+          // When all devices are tested, update the menu
+          if (this._pendingDevices <= 0) {
+            console.log("CamPeek: All devices tested, working devices:", this._workingDevices);
+            this._updateCameraSelectionMenu(this._workingDevices);
+            
+            // Clean up
+            delete this._testedDevices;
+            delete this._workingDevices;
+            delete this._pendingDevices;
+          }
+        });
+      });
+    }
+
+    _testCameraQuick(device, callback) {
+      try {
+        // Optimize testing order: fastest to slowest
+        // 1. First check if device supports video capture (fastest)
+        this._testCameraCapabilities(device, (capabilitySuccess) => {
+          if (!capabilitySuccess) {
+            // If device doesn't support video capture, no need to test further
+            callback(false);
+            return;
+          }
+          
+          // 2. Check for video formats (fast)
+          this._testCameraWithV4L2(device, (v4l2Success) => {
+            if (!v4l2Success) {
+              // If no formats available, no need to test with GStreamer
+              callback(false);
+              return;
+            }
+            
+            // 3. Finally test with GStreamer (slowest but most reliable)
+            this._testCameraWithGStreamer(device, callback);
+          });
+        });
+      } catch (e) {
+        console.error("CamPeek: Error starting camera test for " + device + ":", e);
+        callback(false);
+      }
+    }
+    
+    _testCameraWithGStreamer(device, callback) {
+      const command = "timeout 2s gst-launch-1.0 v4l2src device=" + device + " num-buffers=1 ! videoconvert ! videoscale ! video/x-raw,width=320,height=240 ! fakesink > /dev/null 2>&1 && echo success || echo fail";
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        const works = success && stdout && stdout.trim() === "success";
+        callback(works);
+      }, {
+        timeout: 3000,
+        description: "GStreamer test for " + device
+      });
+    }
+    
+    _testCameraWithV4L2(device, callback) {
+      const command = "v4l2-ctl --device=" + device + " --list-formats 2>/dev/null | grep -E \"\\[[0-9]+\\]:\" | wc -l";
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        if (success && stdout) {
+          let formatCount = parseInt(stdout.trim());
+          let works = !isNaN(formatCount) && formatCount > 0;
+          callback(works);
+        } else {
+          callback(false);
+        }
+      }, {
+        timeout: 2000,
+        description: "v4l2-ctl test for " + device
+      });
+    }
+    
+    _testCameraBasicAccess(device, callback) {
+      try {
+        // Basic test: check if device exists and is readable
+        let deviceFile = Gio.File.new_for_path(device);
+        if (!deviceFile.query_exists(null)) {
+          callback(false);
+          return;
+        }
+        
+        // Check if device is a video capture device using capabilities
+        this._testCameraCapabilities(device, callback);
+      } catch (e) {
+        console.error("CamPeek: Error in basic access test for " + device + ":", e);
+        callback(false);
+      }
+    }
+    
+    _testCameraCapabilities(device, callback) {
+      // Check if device supports video capture using Device Caps (most reliable for modern cameras)
+      const command = "v4l2-ctl --device=" + device + " --info 2>/dev/null | sed -n '/Device Caps/,/^$/p' | grep -q \"Video Capture\" && echo device_caps_ok || echo device_caps_fail";
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        if (stdout && stdout.trim() === "device_caps_ok") {
+          callback(true);
+          return;
+        }
+        
+        // Fallback method for older cameras
+        this._testCameraCapabilitiesFallback(device, callback);
+      }, {
+        timeout: 2000,
+        description: "capabilities test for " + device
+      });
+    }
+    
+    _testCameraCapabilitiesFallback(device, callback) {
+      // Fallback method: check if device is a character device and readable
+      const command = "[ -c \"" + device + "\" ] && [ -r \"" + device + "\" ] && echo success || echo fail";
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        const works = stdout && stdout.trim() === "success";
+        callback(works);
+      }, {
+        timeout: 1000,
+        description: "fallback capabilities test for " + device
+      });
+    }
+
     _updateCameraSelectionMenu(deviceOutput) {
       // Don't update if menu is closed
       if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
@@ -355,60 +564,107 @@ const CamPeekIndicator = GObject.registerClass(
         let cameras = [];
         if (deviceOutput && deviceOutput !== "none") {
           let deviceList = deviceOutput.split("\n").filter(d => d && d.trim() !== "");
-          deviceList.forEach((device, index) => {
-            let devicePath = device.trim();
-            let friendlyName = `Camera ${index}`;
-            cameras.push({
-              device: devicePath,
-              label: `${friendlyName} (${devicePath})`,
-            });
+          
+          // Get camera names asynchronously for better UX
+          this._getCameraNames(deviceList, (cameraInfo) => {
+            cameras = cameraInfo;
+            this._finalizeCameraMenu(cameras);
           });
-        }
-        // If no cameras found, show a disabled item
-        if (cameras.length === 0) {
-          // Remove all items and show only 'No cameras found'
-          const finish = () => {
-            this._cameraSelectionMenu.removeAll();
-            let noCamerasItem = new PopupMenu.PopupMenuItem(_("No cameras found"));
-            noCamerasItem.setSensitive(false);
-            this._cameraSelectionMenu.addMenuItem(noCamerasItem);
-            // Add refresh and donate as usual
-            this._rebuildCameraMenu([]); // Will add refresh/donate
-          };
-          // Ensure minimum loading time
-          let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
-          let minDuration = 100;
-          if (elapsed < minDuration) {
-            // Store timeout ID for cleanup
-            if (this._cameraMenuTimeoutId1) {
-              GLib.source_remove(this._cameraMenuTimeoutId1);
-              this._cameraMenuTimeoutId1 = null;
-            }
-            this._cameraMenuTimeoutId1 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId1 = null; return GLib.SOURCE_REMOVE; });
-          } else {
-            finish();
-          }
           return;
         }
-        // Otherwise, rebuild menu with real cameras
-        const finish = () => { this._rebuildCameraMenu(cameras); };
-        let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
-        let minDuration = 400;
-        if (elapsed < minDuration) {
-          // Store timeout ID for cleanup
-          if (this._cameraMenuTimeoutId2) {
-            GLib.source_remove(this._cameraMenuTimeoutId2);
-            this._cameraMenuTimeoutId2 = null;
-          }
-          this._cameraMenuTimeoutId2 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId2 = null; return GLib.SOURCE_REMOVE; });
-        } else {
-          finish();
-        }
+        
+        // If no cameras found, show a disabled item
+        this._finalizeCameraMenu([]);
       } catch (e) {
         console.error("CamPeek: Error updating camera menu:", e);
       }
     }
     
+    _getCameraNames(deviceList, callback) {
+      let cameras = [];
+      let pendingRequests = deviceList.length;
+      
+      if (pendingRequests === 0) {
+        callback([]);
+        return;
+      }
+      
+      deviceList.forEach((device, index) => {
+        let devicePath = device.trim();
+        
+        // Try to get the actual camera name
+        const command = "v4l2-ctl --device=" + devicePath + " --info 2>/dev/null | grep \"Card type\" | cut -d: -f2 | sed 's/^[[:space:]]*//' || echo \"Camera " + index + "\"";
+        
+        this._runCommand(command, (success, stdout, stderr) => {
+          let cameraName = stdout ? stdout.trim() : "Camera " + index;
+          
+          // Fallback to generic name if empty or too long
+          if (!cameraName || cameraName === "" || cameraName.length > 50) {
+            cameraName = "Camera " + index;
+          }
+          
+          cameras.push({
+            device: devicePath,
+            label: cameraName + " (" + devicePath + ")",
+            name: cameraName
+          });
+          
+          pendingRequests--;
+          if (pendingRequests <= 0) {
+            // Sort cameras by device path for consistent ordering
+            cameras.sort((a, b) => a.device.localeCompare(b.device));
+            callback(cameras);
+          }
+        }, {
+          timeout: 2000,
+          description: "camera name detection for " + devicePath
+        });
+      });
+    }
+    
+    _finalizeCameraMenu(cameras) {
+      // If no cameras found, show a disabled item
+      if (cameras.length === 0) {
+        // Remove all items and show only 'No cameras found'
+        const finish = () => {
+          this._cameraSelectionMenu.removeAll();
+          let noCamerasItem = new PopupMenu.PopupMenuItem(_("No cameras found"));
+          noCamerasItem.setSensitive(false);
+          this._cameraSelectionMenu.addMenuItem(noCamerasItem);
+          // Add refresh and donate as usual
+          this._rebuildCameraMenu([]); // Will add refresh/donate
+        };
+        // Ensure minimum loading time
+        let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
+        let minDuration = 100;
+        if (elapsed < minDuration) {
+          // Store timeout ID for cleanup
+          if (this._cameraMenuTimeoutId1) {
+            GLib.source_remove(this._cameraMenuTimeoutId1);
+            this._cameraMenuTimeoutId1 = null;
+          }
+          this._cameraMenuTimeoutId1 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId1 = null; return GLib.SOURCE_REMOVE; });
+        } else {
+          finish();
+        }
+        return;
+      }
+      // Otherwise, rebuild menu with real cameras
+      const finish = () => { this._rebuildCameraMenu(cameras); };
+      let elapsed = Date.now() - (this._cameraLoadingStartTime || 0);
+      let minDuration = 400;
+      if (elapsed < minDuration) {
+        // Store timeout ID for cleanup
+        if (this._cameraMenuTimeoutId2) {
+          GLib.source_remove(this._cameraMenuTimeoutId2);
+          this._cameraMenuTimeoutId2 = null;
+        }
+        this._cameraMenuTimeoutId2 = GLib.timeout_add(GLib.PRIORITY_DEFAULT, minDuration - elapsed, () => { finish(); this._cameraMenuTimeoutId2 = null; return GLib.SOURCE_REMOVE; });
+      } else {
+        finish();
+      }
+    }
+
     _rebuildCameraMenu(cameras) {
       // Don't update if menu is closed
       if (!this._cameraSelectionMenu || !this._isSelectionMenuOpen) {
@@ -461,7 +717,7 @@ const CamPeekIndicator = GObject.registerClass(
               try {
                 Gio.AppInfo.launch_default_for_uri_finish(result);
               } catch (e) {
-                console.error(`Failed to open URL: ${e.message}`);
+                console.error("Failed to open URL: " + e.message);
               }
             });
           } catch (e) {
@@ -570,10 +826,22 @@ const CamPeekIndicator = GObject.registerClass(
 
     _actuallyStartCamera() {
       try {
+        // First check if the camera device exists
+        let deviceFile = Gio.File.new_for_path(this._cameraDevice);
+        if (!deviceFile.query_exists(null)) {
+          this._spinner.visible = false;
+          this._showCameraErrorMessage(
+            "No Camera Found", 
+            "Connect a camera device",
+            "Make sure your camera is connected and try again. You can also right-click the CamPeek icon to select a different camera."
+          );
+          return;
+        }
+
         // Create a temporary directory for our frames
         let tempDir = GLib.build_filenamev([
           GLib.get_tmp_dir(),
-          `campeek-frames-${GLib.random_int()}`,
+          "campeek-frames-" + GLib.random_int(),
         ]);
         this._tempDir = tempDir;
 
@@ -599,30 +867,66 @@ const CamPeekIndicator = GObject.registerClass(
         this._framesDir = GLib.build_filenamev([tempDir, "frames"]);
         GLib.mkdir_with_parents(this._framesDir, 0o755);
 
-        // Create a script that uses GStreamer for more efficient frame capture with 16:9 aspect ratio
+        // Create a script that uses GStreamer for more efficient frame capture with adaptive resolution
         let scriptPath = GLib.build_filenamev([tempDir, "capture.sh"]);
-        let scriptContent = `#!/bin/bash
-
-# Store the process ID
-echo $$ > "${tempDir}/pid"
-
-# Clean up any existing frames
-rm -f ${this._framesDir}/frame_*.jpg 2>/dev/null
-
-# Use GStreamer for frame capture with 16:9 aspect ratio (480x270)
-gst-launch-1.0 v4l2src device=${this._cameraDevice} ! \
-videoconvert ! videoscale add-borders=false ! video/x-raw,width=480,height=270,framerate=30/1 ! \
-queue max-size-buffers=2 leaky=downstream ! \
-videoflip method=horizontal-flip ! jpegenc quality=85 ! \
-multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-messages=true || \
-(echo "ERROR" > "${tempDir}/camera_error" && exit 1)
-`;
+        let scriptContent = "#!/bin/bash\n\n" +
+          "# Store the process ID\n" +
+          "echo $$ > \"" + tempDir + "/pid\"\n\n" +
+          "# Clean up any existing frames\n" +
+          "rm -f " + this._framesDir + "/frame_*.jpg 2>/dev/null\n\n" +
+          "# Check if GStreamer is available\n" +
+          "if ! command -v gst-launch-1.0 &> /dev/null; then\n" +
+          "    echo \"GSTREAMER_MISSING\" > \"" + tempDir + "/camera_error\"\n" +
+          "    exit 1\n" +
+          "fi\n\n" +
+          "# Check if device exists and is accessible\n" +
+          "if [ ! -e \"" + this._cameraDevice + "\" ]; then\n" +
+          "    echo \"DEVICE_NOT_FOUND\" > \"" + tempDir + "/camera_error\"\n" +
+          "    exit 1\n" +
+          "fi\n\n" +
+          "if [ ! -r \"" + this._cameraDevice + "\" ]; then\n" +
+          "    echo \"PERMISSION_DENIED\" > \"" + tempDir + "/camera_error\"\n" +
+          "    exit 1\n" +
+          "fi\n\n" +
+          "# Get camera capabilities and choose best format\n" +
+          "CAMERA_CAPS=\"\"\n" +
+          "if command -v v4l2-ctl &> /dev/null; then\n" +
+          "    # Try to get supported resolutions and formats\n" +
+          "    FORMATS=$(v4l2-ctl --device=" + this._cameraDevice + " --list-formats-ext 2>/dev/null | grep -E \"Size:|Interval:\" | head -20)\n" +
+          "    \n" +
+          "    # Check for common resolutions (prefer 16:9 aspect ratio)\n" +
+          "    if echo \"$FORMATS\" | grep -q \"640x360\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=640,height=360\"\n" +
+          "    elif echo \"$FORMATS\" | grep -q \"854x480\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=854,height=480\"\n" +
+          "    elif echo \"$FORMATS\" | grep -q \"960x540\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=960,height=540\"\n" +
+          "    elif echo \"$FORMATS\" | grep -q \"1280x720\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=1280,height=720\"\n" +
+          "    elif echo \"$FORMATS\" | grep -q \"640x480\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=640,height=480\"\n" +
+          "    elif echo \"$FORMATS\" | grep -q \"320x240\"; then\n" +
+          "        CAMERA_CAPS=\"video/x-raw,width=320,height=240\"\n" +
+          "    fi\n" +
+          "fi\n\n" +
+          "# Fallback to auto-negotiation if no specific format found\n" +
+          "if [ -z \"$CAMERA_CAPS\" ]; then\n" +
+          "    CAMERA_CAPS=\"video/x-raw\"\n" +
+          "fi\n\n" +
+          "# Use GStreamer for frame capture with adaptive resolution and better error handling\n" +
+          "gst-launch-1.0 v4l2src device=" + this._cameraDevice + " ! \\\n" +
+          "videoconvert ! videoscale add-borders=false ! $CAMERA_CAPS,framerate=30/1 ! \\\n" +
+          "videoscale ! video/x-raw,width=480,height=270 ! \\\n" +
+          "queue max-size-buffers=2 leaky=downstream ! \\\n" +
+          "videoflip method=horizontal-flip ! jpegenc quality=85 ! \\\n" +
+          "multifilesink location=\"" + this._framesDir + "/frame_%05d.jpg\" max-files=5 post-messages=true 2>/dev/null || \\\n" +
+          "(echo \"CAMERA_ERROR\" > \"" + tempDir + "/camera_error\" && exit 1)\n";
 
         // Write the script to a file
         let bytes = new TextEncoder().encode(scriptContent);
-        let file = Gio.File.new_for_path(scriptPath);
+        let scriptFile = Gio.File.new_for_path(scriptPath);
 
-        let outputStream = file.replace(
+        let outputStream = scriptFile.replace(
           null,
           false,
           Gio.FileCreateFlags.NONE,
@@ -633,14 +937,14 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         outputStream.close(null);
 
         // Set executable permission
-        let info = file.query_info(
+        let info = scriptFile.query_info(
           "unix::mode",
           Gio.FileQueryInfoFlags.NONE,
           null,
         );
         let mode = info.get_attribute_uint32("unix::mode");
         info.set_attribute_uint32("unix::mode", mode | 0o100); // Add executable bit
-        file.set_attributes_from_info(info, Gio.FileQueryInfoFlags.NONE, null);
+        scriptFile.set_attributes_from_info(info, Gio.FileQueryInfoFlags.NONE, null);
 
         // Launch the script to start capturing frames
         this._cameraProcess = Gio.Subprocess.new(
@@ -673,106 +977,94 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
           this._startTimeout = 0;
         }
 
-        // Set a timeout to check if camera started successfully - reduced to 2 seconds
+        // Set a timeout to check if camera started successfully - increased timeout
         this._startTimeout = GLib.timeout_add(
           GLib.PRIORITY_DEFAULT,
-          2000, // Reduced from 5000 to 2000 ms
+          4000, // Increased from 2000 to 4000 ms for slower systems
           () => {
             if (this._spinner.visible) {
               this._spinner.visible = false;
-              this._showCameraErrorMessage(
-                "Camera couldn't be started. It might be in use by another application.",
-              );
+              
+              // Check for specific error messages
+              this._checkCameraError();
             }
             this._startTimeout = 0;
             return GLib.SOURCE_REMOVE;
           },
         );
       } catch (e) {
-        console.error(e, "Error starting camera");
+        console.error("CamPeek: Error starting camera", e);
         this._spinner.visible = false;
-        this._showCameraErrorMessage("Error starting camera: " + e.message);
+        this._showCameraErrorMessage("Error starting camera", "Try again", e.message);
       }
     }
-
-    _showCameraErrorMessage(message) {
-      // Hide the spinner
-      this._spinner.visible = false;
-
-      // Create and show the camera-in-use message
-      this._cameraInUseMessage = new St.BoxLayout({
-        vertical: true,
-        x_expand: true,
-        y_expand: true,
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
-      });
-
-      // Add an icon
-      let icon = new St.Icon({
-        icon_name: "camera-disabled-symbolic",
-        icon_size: 48,
-        style_class: "camera-in-use-icon",
-        x_align: Clutter.ActorAlign.CENTER,
-      });
-      this._cameraInUseMessage.add_child(icon);
-
-      // Add a message
-      let label = new St.Label({
-        text:
-          message ||
-          "Camera is currently in use. Please close it and try again.",
-        style_class: "camera-in-use-message",
-        x_align: Clutter.ActorAlign.CENTER,
-      });
-      this._cameraInUseMessage.add_child(label);
-
-      // Add a retry button
-      let buttonBox = new St.BoxLayout({
-        x_align: Clutter.ActorAlign.CENTER,
-        y_align: Clutter.ActorAlign.CENTER,
-        style_class: "camera-retry-box",
-      });
-
-      let button = new St.Button({
-        label: "Try Again",
-        style_class: "camera-retry-button button",
-        x_align: Clutter.ActorAlign.CENTER,
-      });
-
-      // Improved retry logic with better error handling
-      button.connect("clicked", () => {
-        // First make sure we clean up any existing message
-        if (this._cameraInUseMessage && this._cameraInUseMessage.get_parent()) {
-          this._previewContainer.remove_child(this._cameraInUseMessage);
-          this._cameraInUseMessage = null;
-        }
-
-        // Make sure the spinner is visible before trying to start the camera
-        this._spinner.visible = true;
-
-        // Add a slight delay to ensure UI updates before trying camera again
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-          try {
-            // Try to start the camera preview again
-            this._startCameraPreview();
-          } catch (e) {
-            // If anything fails, make sure we show an error
-            console.error("Error during retry:", e);
-            this._spinner.visible = false;
-            this._showCameraErrorMessage(
-              "Failed to restart camera. It may still be in use.",
-            );
+    
+    _checkCameraError() {
+      if (!this._tempDir) {
+        this._showCameraErrorMessage(
+          "Camera couldn't be started", 
+          "Try again",
+          "The camera might be in use by another application."
+        );
+        return;
+      }
+      
+      let errorFile = GLib.build_filenamev([this._tempDir, "camera_error"]);
+      let errorFileObj = Gio.File.new_for_path(errorFile);
+      
+      if (errorFileObj.query_exists(null)) {
+        try {
+          let [success, contents] = errorFileObj.load_contents(null);
+          if (success) {
+            let errorType = new TextDecoder().decode(contents).trim();
+            
+            switch (errorType) {
+              case "GSTREAMER_MISSING":
+                this._showCameraErrorMessage(
+                  "GStreamer Not Found",
+                  "Install GStreamer",
+                  "Please install GStreamer: sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good"
+                );
+                break;
+              case "DEVICE_NOT_FOUND":
+                this._showCameraErrorMessage(
+                  "No Camera Found",
+                  "Connect a camera device",
+                  "Make sure your camera is connected and recognized by the system."
+                );
+                break;
+              case "PERMISSION_DENIED":
+                this._showCameraErrorMessage(
+                  "Permission Denied",
+                  "Check permissions",
+                  "Add your user to the video group: sudo usermod -a -G video $USER (then log out and back in)"
+                );
+                break;
+              case "CAMERA_ERROR":
+              default:
+                this._showCameraErrorMessage(
+                  "Camera Error",
+                  "Try again",
+                  "The camera might be in use by another application or not working properly."
+                );
+                break;
+            }
           }
-          return GLib.SOURCE_REMOVE;
-        });
-      });
-
-      buttonBox.add_child(button);
-      this._cameraInUseMessage.add_child(buttonBox);
-
-      // Add to container
-      this._previewContainer.add_child(this._cameraInUseMessage);
+        } catch (e) {
+          console.error("Error reading camera error file:", e);
+          this._showCameraErrorMessage(
+            "Camera couldn't be started",
+            "Try again", 
+            "The camera might be in use by another application."
+          );
+        }
+      } else {
+        this._showCameraErrorMessage(
+          "Camera couldn't be started",
+          "Try again",
+          "The camera might be in use by another application."
+        );
+      }
     }
 
     _refreshFrame() {
@@ -786,7 +1078,9 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
             if (this._spinner.visible) {
               this._spinner.visible = false;
               this._showCameraErrorMessage(
-                "Camera couldn't be started. It might be in use by another application.",
+                "Camera couldn't be started",
+                "Try again",
+                "The camera might be in use by another application."
               );
             }
             return true; // Keep the timeout active but don't try to load frames
@@ -988,6 +1282,16 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
       }
 
       this._spinner.visible = false;
+
+      // Try to kill any stray test processes 
+      this._runCommand(
+        ["pkill", "-f", "campeek-test-"],
+        () => {}, // Don't wait for completion, it's best-effort cleanup
+        {
+          timeout: 1000,
+          description: 'cleanup camera test processes'
+        }
+      );
     }
 
     _recursiveDelete(file) {
@@ -1012,9 +1316,61 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         // Now delete the file/directory itself
         file.delete(null);
       } catch (e) {
-        console.error(`Error deleting file ${file.get_path()}: ${e.message}`);
+        console.error("Error deleting file " + file.get_path() + ": " + e.message);
       }
     }
+
+    // Centralized subprocess utility to reduce code duplication
+    _runCommand(command, callback, options = {}) {
+      try {
+        const {
+          timeout = 5000,
+          silent = true,
+          description = 'command'
+        } = options;
+
+        let proc = Gio.Subprocess.new(
+          Array.isArray(command) ? command : ['bash', '-c', command],
+          silent ? 
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE :
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+        );
+
+        // Set up timeout if specified
+        let timeoutId = null;
+        if (timeout > 0) {
+          timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, timeout, () => {
+            try {
+              proc.force_exit();
+            } catch (e) {
+              console.error("CamPeek: Error forcing exit of " + description + ":", e);
+            }
+            callback(false, '', "Timeout after " + timeout + "ms");
+            return GLib.SOURCE_REMOVE;
+          });
+        }
+
+        proc.communicate_utf8_async(null, null, (proc, result) => {
+          try {
+            // Clear timeout if it was set
+            if (timeoutId) {
+              GLib.source_remove(timeoutId);
+            }
+
+            let [, stdout, stderr] = proc.communicate_utf8_finish(result);
+            let success = proc.get_successful();
+            callback(success, stdout || '', stderr || '');
+          } catch (e) {
+            console.error("CamPeek: Error in " + description + ":", e);
+            callback(false, '', e.message);
+          }
+        });
+      } catch (e) {
+        console.error("CamPeek: Error starting " + description + ":", e);
+        callback(false, '', e.message);
+      }
+    }
+
     _removeAllPadding() {
       // Now implemented to properly adjust the styling
       if (this.menu.box) {
@@ -1039,15 +1395,53 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         this.menu.open = this._originalOpenMenuFunc;
       }
 
-      // Cancel any running async camera detection
-      if (this._cameraDetectionProcess) {
-        try {
-          this._cameraDetectionProcess.force_exit();
-        } catch (e) {
-          console.error("CamPeek: Error cancelling camera detection:", e);
-        }
-        this._cameraDetectionProcess = null;
+      // Clean up any pending camera tests
+      if (this._pendingTestProcesses && this._pendingTestProcesses.length > 0) {
+        this._pendingTestProcesses.forEach(item => {
+          try {
+            if (item.proc) {
+              item.proc.force_exit();
+            }
+            // Clean up files asynchronously
+            this._cleanupTestFiles(item.testFile, item.scriptPath);
+          } catch (e) {
+            console.error("CamPeek: Error cleaning up test process:", e);
+          }
+        });
+        this._pendingTestProcesses = [];
       }
+      
+      // Clean up camera test timeout
+      if (this._cameraTestTimeout) {
+        GLib.source_remove(this._cameraTestTimeout);
+        this._cameraTestTimeout = null;
+      }
+      
+      // Clean up refresh timeout - this was missing before
+      if (this._refreshTimeout) {
+        GLib.source_remove(this._refreshTimeout);
+        this._refreshTimeout = null;
+      }
+      
+      // Try to kill any stray test processes 
+      this._runCommand(
+        ["pkill", "-f", "campeek-test-"],
+        () => {}, // Don't wait for completion, it's best-effort cleanup
+        {
+          timeout: 1000,
+          description: 'cleanup camera test processes'
+        }
+      );
+      
+      // Clean up test-related variables
+      delete this._testedDevices;
+      delete this._workingDevices;
+      delete this._pendingDevices;
+      delete this._pendingTestProcesses;
+      delete this._cameraTestResults;
+      delete this._cameraTestCount;
+      delete this._camerasToTest;
+      delete this._cameraSelectionComplete;
 
       // Clean up camera selection menu if it exists
       if (this._cameraSelectionMenu) {
@@ -1092,14 +1486,309 @@ multifilesink location="${this._framesDir}/frame_%05d.jpg" max-files=5 post-mess
         this._outsideClickId = null;
       }
 
+      // Clean up start timeout if active
+      if (this._startTimeout) {
+        GLib.source_remove(this._startTimeout);
+        this._startTimeout = null;
+      }
+
+      // Clean up retry timeout if active
+      if (this._retryTimeout) {
+        GLib.source_remove(this._retryTimeout);
+        this._retryTimeout = null;
+      }
+
       // Disconnect button-press-event signal handler
       if (this._buttonPressHandler) {
-        this.disconnect_by_func(this._buttonPressHandler);
+        this.disconnect(this._buttonPressHandler);
         this._buttonPressHandler = null;
       }
 
       this._stopCameraPreview();
       super.destroy();
+    }
+
+    _validateCameraDevice() {
+      // Check if the current camera device exists
+      let deviceFile = Gio.File.new_for_path(this._cameraDevice);
+      if (!deviceFile.query_exists(null)) {
+        console.log("CamPeek: Camera device " + this._cameraDevice + " does not exist, finding a valid one...");
+        this._findAndTestCameras();
+      } else {
+        // Quick test to see if camera works - if not, find a working one
+        this._testCameraQuick(this._cameraDevice, (works) => {
+          if (!works) {
+            console.log("CamPeek: Camera device " + this._cameraDevice + " exists but doesn't work");
+            this._findAndTestCameras();
+          }
+          // No need to log if working
+        });
+      }
+    }
+    
+    _findAndTestCameras() {
+      try {
+        // Get list of camera devices using multiple methods
+        let commands = [
+          // Primary method: list video devices
+          'ls -1 /dev/video* 2>/dev/null',
+          // Alternative method: use v4l2-ctl if available
+          'v4l2-ctl --list-devices 2>/dev/null | grep -E "^/dev/video" | head -10',
+          // Fallback: check common camera device paths
+          'for i in {0..9}; do [ -e "/dev/video$i" ] && echo "/dev/video$i"; done'
+        ];
+        
+        this._tryNextDetectionMethod(commands, 0);
+      } catch (e) {
+        console.error("CamPeek: Error finding camera devices:", e);
+        // Fallback to default device
+        this._fallbackToDefaultDevice();
+      }
+    }
+    
+    _tryNextDetectionMethod(commands, index) {
+      if (index >= commands.length) {
+        // All methods failed, try fallback
+        this._fallbackToDefaultDevice();
+        return;
+      }
+      
+      const command = commands[index];
+      console.log("CamPeek: Trying detection method " + (index + 1) + ": " + command);
+      
+      this._runCommand(command, (success, stdout, stderr) => {
+        if (success && stdout && stdout.trim() !== "") {
+          let devices = stdout.split("\n").filter(d => d && d.trim() !== "" && d.startsWith("/dev/video"));
+          
+          if (devices.length > 0) {
+            console.log("CamPeek: Found " + devices.length + " potential camera device(s) using method " + (index + 1));
+            this._testAllCameras(devices);
+            return;
+          }
+        }
+        
+        // This method didn't work, try the next one
+        this._tryNextDetectionMethod(commands, index + 1);
+      }, {
+        timeout: 3000,
+        description: "detection method " + (index + 1)
+      });
+    }
+    
+    _fallbackToDefaultDevice() {
+      console.log("CamPeek: No cameras detected, checking common device paths...");
+      
+      // Check expanded range of camera device paths for better compatibility
+      let commonPaths = [
+        '/dev/video0', '/dev/video1', '/dev/video2', '/dev/video3', '/dev/video4',
+        '/dev/video5', '/dev/video6', '/dev/video7', '/dev/video8', '/dev/video9',
+        '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14',
+        '/dev/video15', '/dev/video16', '/dev/video17', '/dev/video18', '/dev/video19'
+      ];
+      let foundDevices = [];
+      
+      for (let path of commonPaths) {
+        let deviceFile = Gio.File.new_for_path(path);
+        if (deviceFile.query_exists(null)) {
+          foundDevices.push(path);
+        }
+      }
+      
+      if (foundDevices.length > 0) {
+        console.log("CamPeek: Found " + foundDevices.length + " device(s) in fallback check");
+        this._testAllCameras(foundDevices);
+      } else {
+        console.log("CamPeek: No camera devices found at all");
+        // Set to default anyway - user might connect a camera later
+        this._cameraDevice = "/dev/video0";
+        this._settings.set_string("camera-device", this._cameraDevice);
+      }
+    }
+
+    _testAllCameras(devices) {
+      // Early fallback if only one device exists
+      if (devices.length === 1) {
+        // No need to log for single device case - just use it
+        this._cameraDevice = devices[0].trim();
+        this._settings.set_string("camera-device", this._cameraDevice);
+        return;
+      }
+      
+      // Variables to track testing progress
+      this._cameraTestResults = [];
+      this._cameraTestCount = 0;
+      this._camerasToTest = devices.length;
+      this._cameraSelectionComplete = false;
+      
+      // Test all cameras in parallel
+      devices.forEach(device => {
+        this._testCameraQuick(device.trim(), (works) => {
+          this._cameraTestCount++;
+          
+          if (works) {
+            this._cameraTestResults.push({
+              device: device.trim(),
+              works: true
+            });
+          } else {
+            this._cameraTestResults.push({
+              device: device.trim(),
+              works: false
+            });
+          }
+          
+          // When all tests complete, pick the first working camera
+          if (this._cameraTestCount >= this._camerasToTest) {
+            this._selectWorkingCamera();
+          }
+        });
+      });
+      
+      // Set a timeout in case some tests hang
+      this._cameraTestTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
+        if (this._cameraTestCount < this._camerasToTest) {
+          this._selectWorkingCamera();
+        }
+        this._cameraTestTimeout = null;
+        return GLib.SOURCE_REMOVE;
+      });
+    }
+    
+    _selectWorkingCamera() {
+      // Prevent multiple calls
+      if (this._cameraSelectionComplete) {
+        return;
+      }
+      this._cameraSelectionComplete = true;
+      
+      // Clear timeout if it exists
+      if (this._cameraTestTimeout) {
+        GLib.source_remove(this._cameraTestTimeout);
+        this._cameraTestTimeout = null;
+      }
+      
+      // Find first working camera
+      let workingCamera = this._cameraTestResults.find(result => result.works);
+      
+      if (workingCamera) {
+        // Only log if the camera is changing
+        if (workingCamera.device !== this._cameraDevice) {
+          console.log("CamPeek: Selected working camera: " + workingCamera.device);
+        }
+        this._cameraDevice = workingCamera.device;
+        this._settings.set_string("camera-device", workingCamera.device);
+      } else {
+        // Fallback to first device if none work
+        if (this._cameraTestResults.length > 0 && 
+            this._cameraTestResults[0].device !== this._cameraDevice) {
+          console.log("CamPeek: No working cameras found, defaulting to first device");
+          this._cameraDevice = this._cameraTestResults[0].device;
+          this._settings.set_string("camera-device", this._cameraDevice);
+        }
+      }
+      
+      // Clean up
+      delete this._cameraTestResults;
+      delete this._cameraTestCount;
+      delete this._camerasToTest;
+      delete this._cameraSelectionComplete;
+    }
+
+    _showCameraErrorMessage(title, message, details) {
+      // Hide the spinner
+      this._spinner.visible = false;
+
+      // Create and show the camera-in-use message
+      this._cameraInUseMessage = new St.BoxLayout({
+        vertical: true,
+        x_expand: true,
+        y_expand: true,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+      });
+
+      // Add an icon
+      let icon = new St.Icon({
+        icon_name: "camera-disabled-symbolic",
+        icon_size: 48,
+        style_class: "camera-in-use-icon",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(icon);
+
+      // Add a title
+      let titleLabel = new St.Label({
+        text: title,
+        style_class: "camera-in-use-title",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(titleLabel);
+
+      // Add a message
+      let messageLabel = new St.Label({
+        text: message,
+        style_class: "camera-in-use-message",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(messageLabel);
+
+      // Add details
+      let detailsLabel = new St.Label({
+        text: details,
+        style_class: "camera-in-use-details",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+      this._cameraInUseMessage.add_child(detailsLabel);
+
+      // Add a retry button
+      let buttonBox = new St.BoxLayout({
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
+        style_class: "camera-retry-box",
+      });
+
+      let button = new St.Button({
+        label: "Try Again",
+        style_class: "camera-retry-button button",
+        x_align: Clutter.ActorAlign.CENTER,
+      });
+
+      // Improved retry logic with better error handling
+      button.connect("clicked", () => {
+        // First make sure we clean up any existing message
+        if (this._cameraInUseMessage && this._cameraInUseMessage.get_parent()) {
+          this._previewContainer.remove_child(this._cameraInUseMessage);
+          this._cameraInUseMessage = null;
+        }
+
+        // Make sure the spinner is visible before trying to start the camera
+        this._spinner.visible = true;
+
+        // Add a slight delay to ensure UI updates before trying camera again
+        this._retryTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+          try {
+            // Try to start the camera preview again
+            this._startCameraPreview();
+          } catch (e) {
+            // If anything fails, make sure we show an error
+            console.error("Error during retry:", e);
+            this._spinner.visible = false;
+            this._showCameraErrorMessage(
+              "Failed to restart camera",
+              "Try again",
+              e.message
+            );
+          }
+          this._retryTimeout = null;
+          return GLib.SOURCE_REMOVE;
+        });
+      });
+
+      buttonBox.add_child(button);
+      this._cameraInUseMessage.add_child(buttonBox);
+
+      // Add to container
+      this._previewContainer.add_child(this._cameraInUseMessage);
     }
   },
 );

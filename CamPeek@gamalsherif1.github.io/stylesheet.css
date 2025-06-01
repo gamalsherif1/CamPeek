@@ -51,7 +51,6 @@
 
 /* Style the indicator icon in the top panel */
 .system-status-icon.campeek-icon {
-    icon-size: 16px;
     padding: 0;
     margin: 0 auto !important;
 }
@@ -73,12 +72,30 @@
 }
 
 /* Styles for camera-in-use message */
-.camera-in-use-message {
-    color: #ff5555;
-    font-size: 14px;
+.camera-in-use-title {
+    color: #ffffff;
+    font-size: 18px;
     font-weight: bold;
-    margin: 10px 0;
+    margin: 10px 0 5px 0;
     text-align: center;
+}
+
+.camera-in-use-message {
+    color: #cccccc;
+    font-size: 14px;
+    font-weight: normal;
+    margin: 5px 0;
+    text-align: center;
+}
+
+.camera-in-use-details {
+    color: #999999;
+    font-size: 12px;
+    font-weight: normal;
+    margin: 5px 0 15px 0;
+    text-align: center;
+    max-width: 400px;
+    word-wrap: break-word;
 }
 
 .camera-in-use-icon {
