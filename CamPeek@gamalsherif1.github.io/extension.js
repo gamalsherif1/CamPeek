@@ -869,7 +869,7 @@ const CamPeekIndicator = GObject.registerClass(
 
         // Create a script that uses GStreamer for more efficient frame capture with adaptive resolution
         let scriptPath = GLib.build_filenamev([tempDir, "capture.sh"]);
-        let scriptContent = "#!/bin/bash\n\n" +
+        let scriptContent = "#!/usr/bin/env bash\n\n" +
           "# Store the process ID\n" +
           "echo $$ > \"" + tempDir + "/pid\"\n\n" +
           "# Clean up any existing frames\n" +
@@ -948,7 +948,7 @@ const CamPeekIndicator = GObject.registerClass(
 
         // Launch the script to start capturing frames
         this._cameraProcess = Gio.Subprocess.new(
-          ["/bin/bash", scriptPath],
+          ["bash", scriptPath],
           Gio.SubprocessFlags.NONE,
         );
 
